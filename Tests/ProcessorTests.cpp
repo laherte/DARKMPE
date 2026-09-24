@@ -242,9 +242,48 @@ public:
 
 static ProcessorTests processorTests;
 
-int main()
+// DarkMPEProcessorTests --snapshot <dir>: PNGs of the editor in every mode (100% and 75%), to review the layout.
+static int snapshots (const juce::File& dir)
+{
+    dir.createDirectory();
+    const char* modeNames[] = { "Generate", "Transform", "Cinematic" };
+    for (int mode = 0; mode < 3; ++mode)
+        for (float scale : { 1.0f, 0.75f })
+        {
+            DarkMPEProcessor proc;
+            setParam (proc, "virtualOut", 0.0f);
+            if (mode == 1)
+            {
+                juce::String err;
+                proc.loadMidi (juce::File (DARKMPE_SOURCE_DIR).getChildFile ("Examples/Dark Chords Am.mid"), err);
+            }
+            setParam (proc, "mode", (float) mode);
+            setParam (proc, "preview", 1.0f);
+            proc.refreshNow();
+            proc.prepareToPlay (48000.0, 512);
+            long long clock = 0;
+            run (proc, 200, 512, clock); // the MPE monitor shows what is sounding
+
+            proc.apvts.state.setProperty ("uiScale", scale, nullptr);
+            std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+            const auto image = editor->createComponentSnapshot (editor->getLocalBounds(), true, 1.0f);
+            const auto file = dir.getChildFile (juce::String (modeNames[mode]) + " " + juce::String (juce::roundToInt (scale * 100)) + ".png");
+            file.deleteFile();
+            juce::FileOutputStream out (file);
+            juce::PNGImageFormat png;
+            if (! out.openedOk() || ! png.writeImageToStream (image, out))
+                return 1;
+            std::cout << "wrote " << file.getFullPathName() << " (" << image.getWidth() << "x" << image.getHeight() << ")" << std::endl;
+        }
+    return 0;
+}
+
+int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI init;
+    if (argc == 3 && juce::String (argv[1]) == "--snapshot")
+        return snapshots (juce::File::getCurrentWorkingDirectory().getChildFile (argv[2]));
+
     juce::UnitTestRunner runner;
     runner.setAssertOnFailure (false);
     runner.runTests ({ &processorTests });

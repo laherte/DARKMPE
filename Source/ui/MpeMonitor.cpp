@@ -11,6 +11,27 @@ MpeMonitor::MpeMonitor (DarkMPEProcessor& p) : proc (p)
 
 MpeMonitor::~MpeMonitor() { stopTimer(); }
 
+void MpeMonitor::timerCallback()
+{
+    std::array<int, 64> now {};
+    size_t i = 0;
+    now[i++] = proc.isPortOpen() ? 1 : 0;
+    for (int ch = 2; ch <= 16; ++ch)
+    {
+        const auto& m = proc.monitor (ch);
+        const int note = m.note.load (std::memory_order_relaxed);
+        now[i++] = note;
+        now[i++] = note < 0 ? 0 : (int) std::lround (m.bend.load (std::memory_order_relaxed) * 20.0f);
+        now[i++] = note < 0 ? 0 : (int) std::lround (m.slide.load (std::memory_order_relaxed) * 48.0f)
+                                  + 100 * (int) std::lround (m.pressure.load (std::memory_order_relaxed) * 48.0f);
+    }
+    if (now != snapshot)
+    {
+        snapshot = now;
+        repaint();
+    }
+}
+
 void MpeMonitor::paint (juce::Graphics& g)
 {
     using namespace theme;

@@ -2,17 +2,26 @@
 
 using namespace theme;
 
+namespace
+{
+// Control sizes at 100%: compact so every mode fits its panel.
+constexpr int knobW = 64, knobH = 84, choiceW = 118, choiceH = 44, toggleW = 96, toggleH = 40;
+} // namespace
+
 // ------------------------------------------------------------------ widgets
 DarkMPEEditor::Knob::Knob (juce::AudioProcessorValueTreeState& s, const juce::String& id, const juce::String& text)
     : slider (juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::TextBoxBelow),
       attachment (s, id, slider)
 {
-    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 64, 14);
+    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 58, 14);
     slider.setNumDecimalPlacesToDisplay (2);
+    // Set on the slider itself: its text box is created before the editor's look-and-feel reaches it.
+    slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
     label.setText (text.toUpperCase(), juce::dontSendNotification);
     label.setJustificationType (juce::Justification::centred);
-    label.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+    label.setFont (juce::FontOptions (9.5f, juce::Font::bold));
     label.setColour (juce::Label::textColourId, textDim());
+    label.setMinimumHorizontalScale (0.7f);
     addAndMakeVisible (slider);
     addAndMakeVisible (label);
 }
@@ -20,14 +29,14 @@ DarkMPEEditor::Knob::Knob (juce::AudioProcessorValueTreeState& s, const juce::St
 void DarkMPEEditor::Knob::resized()
 {
     auto r = getLocalBounds();
-    label.setBounds (r.removeFromTop (14));
+    label.setBounds (r.removeFromTop (13));
     slider.setBounds (r);
 }
 
 DarkMPEEditor::Choice::Choice (juce::AudioProcessorValueTreeState& s, const juce::String& id, const juce::String& text)
 {
     label.setText (text.toUpperCase(), juce::dontSendNotification);
-    label.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+    label.setFont (juce::FontOptions (9.5f, juce::Font::bold));
     label.setColour (juce::Label::textColourId, textDim());
     if (auto* p = dynamic_cast<juce::AudioParameterChoice*> (s.getParameter (id)))
         box.addItemList (p->choices, 1);
@@ -96,12 +105,13 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
       monitor (p)
 {
     setLookAndFeel (&lnf);
+    addAndMakeVisible (content);
     auto& s = proc.apvts;
 
     for (auto* b : { &genTab, &xformTab, &cineTab })
     {
         b->setClickingTogglesState (false);
-        addAndMakeVisible (*b);
+        content.addAndMakeVisible (*b);
     }
     genTab.onClick = [this] { proc.setMode (DarkMPEProcessor::Mode::generate); };
     xformTab.onClick = [this]
@@ -110,10 +120,14 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
             setStatus ("Load or drop a .mid file (or CAPTURE from the track) to transform it");
         proc.setMode (DarkMPEProcessor::Mode::transform);
     };
-
     cineTab.onClick = [this] { proc.setMode (DarkMPEProcessor::Mode::cinematic); };
 
-    newBtn.onClick = [this] { proc.generateNew(); setStatus ("New seed"); };
+    newBtn.onClick = [this]
+    {
+        proc.generateNew();
+        if (proc.getMode() != DarkMPEProcessor::Mode::cinematic)
+            setStatus ("New seed");
+    };
     mutateBtn.onClick = [this] { proc.mutate(); setStatus ("Mutated the later bars"); };
     loadBtn.onClick = [this]
     {
@@ -152,17 +166,19 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
                                   setStatus (proc.writeMidiFile (f).existsAsFile() ? "Exported " + f.getFileName() : "Export failed");
                               });
     };
+    scaleBtn.onClick = [this] { showScaleMenu(); };
 
-    for (auto* b : { &newBtn, &mutateBtn, &loadBtn, &captureBtn, &exportBtn })
-        addAndMakeVisible (*b);
-    addAndMakeVisible (previewToggle);
-    addAndMakeVisible (dragOut);
+    for (auto* b : { &newBtn, &mutateBtn, &loadBtn, &captureBtn, &exportBtn, &scaleBtn })
+        content.addAndMakeVisible (*b);
+    content.addAndMakeVisible (previewToggle);
+    content.addAndMakeVisible (dragOut);
 
-    status.setFont (juce::FontOptions (11.0f));
-    status.setColour (juce::Label::textColourId, textDim());
-    addAndMakeVisible (status);
-    addAndMakeVisible (roll);
-    addAndMakeVisible (monitor);
+    status.setFont (juce::FontOptions (11.5f));
+    status.setColour (juce::Label::textColourId, chrome().withAlpha (0.75f));
+    status.setMinimumHorizontalScale (0.6f);
+    content.addAndMakeVisible (status);
+    content.addAndMakeVisible (roll);
+    content.addAndMakeVisible (monitor);
 
     auto knob = [&] (auto& list, const char* id, const char* label) { list.push_back (std::make_unique<Knob> (s, id, label)); };
     auto choice = [&] (auto& list, const char* id, const char* label) { list.push_back (std::make_unique<Choice> (s, id, label)); };
@@ -182,39 +198,42 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     toggle (voiceControls, "bassAnchor", "Bass Anchor");
     toggle (voiceControls, "glide", "Voice Glide");
     toggle (voiceControls, "strumDown", "Strum Down");
-    toggle (voiceControls, "keepExpr", "Keep Input Expr");
+    toggle (voiceControls, "keepExpr", "Keep Expr");
     for (auto [id, label] : { std::pair { "voices", "Voices" }, { "vLow", "Low Note" }, { "vHigh", "High Note" },
                               { "strum", "Strum" }, { "slide", "Legato Glide" } })
         knob (voiceControls, id, label);
 
     choice (cineControls, "cProg", "Progression");
     choice (cineControls, "key", "Key");
+    choice (cineControls, "scale", "Scale");
     choice (cineControls, "cChordLen", "Chord Length");
     choice (cineControls, "bars", "Bars");
     choice (cineControls, "cMotion", "Motion");
     choice (cineControls, "cReharm", "Reharmonise");
     choice (cineControls, "cVoicing", "Voicing");
     choice (cineControls, "cShape", "Glide Shape");
+    toggle (cineControls, "cSub", "Sub");
     for (auto [id, label] : { std::pair { "cTension", "Tension" }, { "cDark", "Darkness" }, { "cVoices", "Voices" },
                               { "cGlide", "Glide" }, { "cAnticip", "Anticipate" }, { "cStagger", "Stagger" },
                               { "cSwell", "Swell" }, { "cArc", "Arc" }, { "cFall", "Fall" }, { "cPulse", "Pulse" },
                               { "cLow", "Low Note" }, { "cHigh", "High Note" } })
         knob (cineControls, id, label);
-    toggle (cineControls, "cSub", "Sub");
-    choice (cineControls, "scale", "Scale");
 
     for (auto [id, label] : { std::pair { "glideTime", "Glide Time" }, { "glideCurve", "Glide Curve" }, { "detune", "Detune" },
                               { "vibDepth", "Vibrato" }, { "vibRate", "Vib Rate" }, { "vibDelay", "Vib Delay" },
                               { "slideAmt", "Timbre" }, { "slideSpread", "Timbre Sprd" }, { "pressAmt", "Pressure" },
-                              { "breath", "Breath" }, { "pbRange", "Bend Rng" } })
+                              { "breath", "Breath" } })
         knob (exprControls, id, label);
-    toggle (exprControls, "virtualOut", "MIDI Port Out");
 
-    for (auto* list : { &genControls, &voiceControls, &cineControls, &exprControls })
+    toggle (outControls, "virtualOut", "Port Out");
+    knob (outControls, "pbRange", "Bend Range");
+
+    for (auto* list : { &genControls, &voiceControls, &cineControls, &exprControls, &outControls })
         for (auto& c : *list)
-            addChildComponent (*c);
-    for (auto& c : exprControls)
-        c->setVisible (true);
+            content.addChildComponent (*c);
+    for (auto* list : { &exprControls, &outControls })
+        for (auto& c : *list)
+            c->setVisible (true);
 
     proc.onRebuilt = [this]
     {
@@ -223,7 +242,16 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
             showHarmony();
     };
 
-    setSize (1200, 780);
+    // Resizable as a whole, at a fixed aspect ratio; the scale is remembered with the plugin state
+    // (read first: setting the limits resizes the editor, and only a finished editor stores its scale).
+    const float saved = juce::jlimit (0.6f, 1.6f, (float) proc.apvts.state.getProperty ("uiScale", 1.0f));
+    setResizable (true, true);
+    setResizeLimits (baseWidth * 6 / 10, baseHeight * 6 / 10, baseWidth * 16 / 10, baseHeight * 16 / 10);
+    if (auto* c = getConstrainer())
+        c->setFixedAspectRatio ((double) baseWidth / (double) baseHeight);
+    setScale (saved);
+    initialised = true;
+
     updateModeVisibility();
     startTimerHz (10);
 }
@@ -258,29 +286,66 @@ void DarkMPEEditor::updateModeVisibility()
     for (auto& c : genControls) c->setVisible (gen);
     for (auto& c : voiceControls) c->setVisible (xform);
     for (auto& c : cineControls) c->setVisible (cine);
-    newBtn.setEnabled (true);
     mutateBtn.setEnabled (gen);
     if (xform && proc.hasSource())
         setStatus ("Source: " + proc.getSourceName() + "  -  " + proc.describeSource());
     if (cine)
         showHarmony();
-    resized();
-    repaint();
+    layoutContent();
+    content.repaint();
+}
+
+// ------------------------------------------------------------------ scale
+void DarkMPEEditor::showScaleMenu()
+{
+    juce::PopupMenu m;
+    const float current = (float) getWidth() / (float) baseWidth;
+    for (int pct : { 60, 75, 90, 100, 125, 150 })
+        m.addItem (pct, juce::String (pct) + "%", true, std::abs (current * 100.0f - (float) pct) < 1.0f);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&scaleBtn),
+                     [safe = juce::Component::SafePointer<DarkMPEEditor> (this)] (int result)
+                     {
+                         if (safe != nullptr && result > 0)
+                             safe->setScale ((float) result / 100.0f);
+                     });
+}
+
+void DarkMPEEditor::setScale (float scale)
+{
+    setSize (juce::roundToInt (baseWidth * scale), juce::roundToInt (baseHeight * scale));
 }
 
 void DarkMPEEditor::paint (juce::Graphics& g)
+{
+    g.fillAll (bg());
+}
+
+void DarkMPEEditor::resized()
+{
+    const float scale = (float) getWidth() / (float) baseWidth;
+    content.setTransform (juce::AffineTransform::scale (scale));
+    content.setBounds (0, 0, baseWidth, baseHeight);
+    if (initialised)
+        proc.apvts.state.setProperty ("uiScale", scale, nullptr);
+    scaleBtn.setButtonText (juce::String (juce::roundToInt (scale * 100.0f)) + "%");
+}
+
+// ------------------------------------------------------------------ content
+void DarkMPEEditor::paintContent (juce::Graphics& g)
 {
     g.fillAll (bg());
 
     // logo
     g.setColour (chrome());
     g.setFont (juce::FontOptions (24.0f, juce::Font::bold).withKerningFactor (0.18f));
-    g.drawText ("DARK", 14, 10, 100, 34, juce::Justification::centredLeft, false);
+    g.drawText ("DARK", 14, 8, 100, 34, juce::Justification::centredLeft, false);
     g.setColour (accent());
-    g.drawText ("MPE", 108, 10, 76, 34, juce::Justification::centredLeft, false);
+    g.drawText ("MPE", 108, 8, 76, 34, juce::Justification::centredLeft, false);
 
     auto section = [&] (juce::Rectangle<int> r, const juce::String& title)
     {
+        if (r.isEmpty())
+            return;
         g.setColour (panel());
         g.fillRoundedRectangle (r.toFloat(), 4.0f);
         g.setColour (grid());
@@ -289,69 +354,83 @@ void DarkMPEEditor::paint (juce::Graphics& g)
         g.setFont (juce::FontOptions (11.0f, juce::Font::bold).withKerningFactor (0.2f));
         g.drawText (title, r.reduced (10, 6).removeFromTop (14), juce::Justification::topLeft);
     };
-    section (genArea, shownMode == DarkMPEProcessor::Mode::generate    ? "LEAD GENERATOR"
-                      : shownMode == DarkMPEProcessor::Mode::cinematic ? "CINEMATIC MOTION"
-                                                                       : "MPE VOICING");
+    section (modeArea, shownMode == DarkMPEProcessor::Mode::generate    ? "LEAD GENERATOR"
+                       : shownMode == DarkMPEProcessor::Mode::cinematic ? "CINEMATIC HARMONY"
+                                                                        : "MPE VOICING");
     section (exprArea, "MPE EXPRESSION");
-
-    if (dropHover)
-    {
-        g.setColour (accent().withAlpha (0.25f));
-        g.fillRect (getLocalBounds());
-        g.setColour (juce::Colours::white);
-        g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
-        g.drawText ("DROP MIDI TO TRANSFORM", getLocalBounds(), juce::Justification::centred);
-    }
+    section (outArea, "OUTPUT");
 }
 
-void DarkMPEEditor::resized()
+void DarkMPEEditor::paintOverlay (juce::Graphics& g)
 {
-    auto r = getLocalBounds().reduced (12, 8);
+    if (! dropHover)
+        return;
+    g.setColour (accent().withAlpha (0.25f));
+    g.fillRect (content.getLocalBounds());
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
+    g.drawText ("DROP MIDI TO TRANSFORM", content.getLocalBounds(), juce::Justification::centred);
+}
 
+void DarkMPEEditor::layoutContent()
+{
+    auto r = content.getLocalBounds().reduced (12, 8);
+
+    // ---- header: logo, mode tabs, scale
     auto header = r.removeFromTop (40);
     header.removeFromLeft (178);
-    genTab.setBounds (header.removeFromLeft (100).reduced (2, 4));
-    xformTab.setBounds (header.removeFromLeft (100).reduced (2, 4));
-    cineTab.setBounds (header.removeFromLeft (100).reduced (2, 4));
-    header.removeFromLeft (16);
-    dragOut.setBounds (header.removeFromRight (160).reduced (2, 2));
-    header.removeFromRight (8);
-    previewToggle.setBounds (header.removeFromRight (86));
-    for (auto* b : { &exportBtn, &captureBtn, &loadBtn, &mutateBtn, &newBtn })
-        b->setBounds (header.removeFromRight (86).reduced (2, 4));
+    for (auto* b : { &genTab, &xformTab, &cineTab })
+        b->setBounds (header.removeFromLeft (100).reduced (2, 4));
+    scaleBtn.setBounds (header.removeFromRight (58).reduced (2, 6));
 
-    status.setBounds (r.removeFromTop (20));
-    roll.setBounds (r.removeFromTop (320));
+    // ---- toolbar: actions, status, playback / export
+    auto bar = r.removeFromTop (34);
+    for (auto* b : { &newBtn, &mutateBtn, &loadBtn, &captureBtn })
+        b->setBounds (bar.removeFromLeft (84).reduced (2, 3));
+    dragOut.setBounds (bar.removeFromRight (160).reduced (2, 2));
+    bar.removeFromRight (6);
+    exportBtn.setBounds (bar.removeFromRight (80).reduced (2, 3));
+    previewToggle.setBounds (bar.removeFromRight (84).withTrimmedTop (-2).withTrimmedBottom (-2));
+    status.setBounds (bar.reduced (8, 0));
+
     r.removeFromTop (4);
-    monitor.setBounds (r.removeFromTop (58));
-    r.removeFromTop (10);
+    roll.setBounds (r.removeFromTop (282));
+    r.removeFromTop (4);
+    monitor.setBounds (r.removeFromTop (56));
+    r.removeFromTop (8);
 
-    genArea = r.removeFromLeft ((int) (r.getWidth() * 0.56f));
-    r.removeFromLeft (10);
-    exprArea = r;
+    // ---- panels: mode | expression | output
+    const int w = r.getWidth();
+    modeArea = r.removeFromLeft ((int) (w * 0.535f));
+    r.removeFromLeft (8);
+    exprArea = r.removeFromLeft ((int) (w * 0.285f));
+    r.removeFromLeft (8);
+    outArea = r;
 
-    auto flow = [] (std::vector<std::unique_ptr<juce::Component>>& list, juce::Rectangle<int> area)
+    auto flow = [] (ControlList& list, juce::Rectangle<int> area)
     {
         juce::FlexBox fb;
         fb.flexWrap = juce::FlexBox::Wrap::wrap;
         fb.alignContent = juce::FlexBox::AlignContent::flexStart;
         for (auto& c : list)
         {
-            float w = 72.0f, h = 92.0f;
-            if (dynamic_cast<Choice*> (c.get()) != nullptr) { w = 140.0f; h = 46.0f; }
-            if (dynamic_cast<Toggle*> (c.get()) != nullptr) { w = 108.0f; h = 46.0f; }
-            fb.items.add (juce::FlexItem (*c).withWidth (w).withHeight (h));
+            int cw = knobW, ch = knobH;
+            if (dynamic_cast<Choice*> (c.get()) != nullptr) { cw = choiceW; ch = choiceH; }
+            if (dynamic_cast<Toggle*> (c.get()) != nullptr) { cw = toggleW; ch = toggleH; }
+            fb.items.add (juce::FlexItem (*c).withWidth ((float) cw).withHeight ((float) ch).withMargin ({ 0, 0, 3, 0 }));
         }
         fb.performLayout (area);
     };
 
-    const auto inner = [] (juce::Rectangle<int> a) { return a.reduced (10, 6).withTrimmedTop (20); };
-    flow (genControls, inner (genArea));
-    flow (voiceControls, inner (genArea));
-    flow (cineControls, inner (genArea));
+    const auto inner = [] (juce::Rectangle<int> a) { return a.reduced (8, 6).withTrimmedTop (18); };
+    flow (genControls, inner (modeArea));
+    flow (voiceControls, inner (modeArea));
+    flow (cineControls, inner (modeArea));
     flow (exprControls, inner (exprArea));
+    flow (outControls, inner (outArea));
 }
 
+// ------------------------------------------------------------------ files
 bool DarkMPEEditor::isInterestedInFileDrag (const juce::StringArray& files)
 {
     for (const auto& f : files)
@@ -371,5 +450,5 @@ void DarkMPEEditor::filesDropped (const juce::StringArray& files, int, int)
             setStatus (proc.loadMidi (f, err) ? "Loaded " + f.getFileName() + "  -  " + proc.describeSource() : err);
             break;
         }
-    repaint();
+    content.repaint();
 }

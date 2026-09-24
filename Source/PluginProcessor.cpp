@@ -398,8 +398,8 @@ void DarkMPEProcessor::generateNew()
 {
     apvts.state.setProperty ("seed", juce::Random::getSystemRandom().nextInt (100000), nullptr);
     apvts.state.setProperty ("variation", 0, nullptr);
-    if (getMode() != Mode::generate)
-        setMode (Mode::generate);
+    if (getMode() == Mode::transform)
+        setMode (Mode::generate); // the seed shapes the lead and the cinematic harmony, not a transform
     rebuild();
 }
 

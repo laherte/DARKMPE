@@ -15,20 +15,59 @@ PianoRoll::~PianoRoll() { stopTimer(); }
 void PianoRoll::refresh()
 {
     shown = proc.getRendered();
+    cacheValid = false;
     repaint();
+}
+
+float PianoRoll::playheadX (double beats) const
+{
+    const double L = shown != nullptr ? std::max (1.0, shown->lengthBeats) : 4.0;
+    return rollArea.getX() + (float) (std::fmod (beats, L) / L) * rollArea.getWidth();
 }
 
 void PianoRoll::timerCallback()
 {
     const double ph = proc.isPlayingBack() ? proc.getPlayheadBeats() : -1.0;
-    if (std::abs (ph - lastPlayhead) > 1.0e-4)
+    if (std::abs (ph - lastPlayhead) < 1.0e-4)
+        return;
+
+    // Only the strips under the old and the new playhead need redrawing.
+    const auto strip = [this] (double beats)
     {
-        lastPlayhead = ph;
-        repaint();
-    }
+        return juce::Rectangle<float> (playheadX (beats) - 2.0f, laneArea.getY(), 4.0f, laneArea.getHeight()).getSmallestIntegerContainer();
+    };
+    if (lastPlayhead >= 0.0)
+        repaint (strip (lastPlayhead));
+    lastPlayhead = ph;
+    if (ph >= 0.0)
+        repaint (strip (ph));
 }
 
 void PianoRoll::paint (juce::Graphics& g)
+{
+    const float scale = g.getInternalContext().getPhysicalPixelScaleFactor();
+    const int w = std::max (1, juce::roundToInt ((float) getWidth() * scale));
+    const int h = std::max (1, juce::roundToInt ((float) getHeight() * scale));
+    if (! cacheValid || cache.getWidth() != w || cache.getHeight() != h)
+    {
+        cache = juce::Image (juce::Image::RGB, w, h, false);
+        juce::Graphics ig (cache);
+        ig.addTransform (juce::AffineTransform::scale ((float) w / (float) std::max (1, getWidth()),
+                                                       (float) h / (float) std::max (1, getHeight())));
+        drawStatic (ig);
+        cacheValid = true;
+    }
+    g.drawImage (cache, getLocalBounds().toFloat());
+
+    if (lastPlayhead >= 0.0)
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.7f));
+        const float x = playheadX (lastPlayhead);
+        g.drawLine (x, laneArea.getY(), x, laneArea.getBottom(), 1.0f);
+    }
+}
+
+void PianoRoll::drawStatic (juce::Graphics& g)
 {
     using namespace theme;
     g.fillAll (bg());
@@ -40,6 +79,8 @@ void PianoRoll::paint (juce::Graphics& g)
     auto slideLane = area.removeFromBottom (laneH);
     area.removeFromBottom (6.0f);
     auto roll = area;
+    rollArea = roll;
+    laneArea = roll.withBottom (pressureLane.getBottom());
 
     g.setColour (panel());
     g.fillRect (roll);
@@ -159,14 +200,6 @@ void PianoRoll::paint (juce::Graphics& g)
     g.drawText ("SLIDE / CC74", slideLane.reduced (4, 2), juce::Justification::topLeft);
     g.setColour (pressureCol());
     g.drawText ("PRESSURE", pressureLane.reduced (4, 2), juce::Justification::topLeft);
-
-    // playhead
-    if (lastPlayhead >= 0.0)
-    {
-        g.setColour (juce::Colours::white.withAlpha (0.7f));
-        const float x = xOf (std::fmod (lastPlayhead, L), roll);
-        g.drawLine (x, roll.getY(), x, pressureLane.getBottom(), 1.0f);
-    }
 
     g.setColour (grid().brighter (0.3f));
     g.drawRect (roll);
