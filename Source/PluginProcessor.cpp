@@ -157,54 +157,20 @@ DarkMPEProcessor::DarkMPEProcessor()
             if (wp->paramID != ids::preview)
                 apvts.addParameterListener (wp->paramID, this);
 
+    pbRangeParam = apvts.getRawParameterValue (ids::pbRange);
+    previewParam = apvts.getRawParameterValue (ids::preview);
+
     rebuild();
 }
 
 DarkMPEProcessor::~DarkMPEProcessor()
 {
     cancelPendingUpdate();
-    std::unique_ptr<juce::MidiOutput> old;
-    {
-        const juce::SpinLock::ScopedLockType sl (portLock);
-        old = std::move (port);
-        portOpen.store (false);
-    }
-    if (old != nullptr)
-    {
-        old->stopBackgroundThread();
-        for (int ch = 1; ch <= 16; ++ch)
-            old->sendMessageNow (juce::MidiMessage::allNotesOff (ch));
-    }
 }
 
-void DarkMPEProcessor::updatePort()
+void DarkMPEProcessor::updatePorts()
 {
-    const bool want = portAllowed.load() && pb (ids::virtualOut);
-    if (want == (port != nullptr))
-        return;
-
-    std::unique_ptr<juce::MidiOutput> fresh;
-    if (want)
-    {
-        fresh = juce::MidiOutput::createNewDevice (portName);
-        if (fresh != nullptr)
-            fresh->startBackgroundThread();
-    }
-
-    std::unique_ptr<juce::MidiOutput> old;
-    {
-        const juce::SpinLock::ScopedLockType sl (portLock);
-        old = std::move (port);
-        port = std::move (fresh);
-        portOpen.store (port != nullptr);
-    }
-
-    if (old != nullptr)
-    {
-        old->stopBackgroundThread();
-        for (int ch = 1; ch <= 16; ++ch)
-            old->sendMessageNow (juce::MidiMessage::allNotesOff (ch));
-    }
+    ports.setOpen (0, portName, portAllowed.load() && pb (ids::virtualOut));
 }
 
 bool DarkMPEProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -217,6 +183,11 @@ void DarkMPEProcessor::prepareToPlay (double sr, int)
 {
     sampleRate = sr;
     wasPlaying = false;
+
+    // Room for a dense block on every layer, so the audio thread never grows a buffer.
+    for (auto& l : layers)
+        l.buffer.ensureSize (32768);
+    hostBuffer.ensureSize (32768);
 
     // The port is created on the message thread once the host actually runs us.
     if (! portAllowed.exchange (true))
@@ -314,34 +285,45 @@ void DarkMPEProcessor::setMode (Mode m)
 }
 
 // ------------------------------------------------------------------ rebuild
+Stream DarkMPEProcessor::makeStream (int layer, Phrase phrase, const ExprParams& expr) const
+{
+    // Keep every note-off strictly inside the loop so wrap-around never leaves hanging notes.
+    const double L = phrase.lengthBeats;
+    for (auto& n : phrase.notes)
+        n.length = std::max (1.0 / 64.0, std::min (n.length, L - n.start - 1.0e-3));
+
+    shapeExpression (phrase, expr);
+
+    Stream s;
+    s.layer = layer;
+    RenderOptions ro;
+    ro.pitchBendRange = pi (ids::pbRange);
+    ro.includeZoneConfig = false; // sent by the audio thread at playback start
+    s.events = toPlayEvents (renderMpe (phrase, ro));
+    s.startup = zoneConfigEvents (ro.pitchBendRange);
+    s.phrase = std::move (phrase);
+    return s;
+}
+
 void DarkMPEProcessor::rebuild()
 {
-    updatePort();
+    updatePorts();
 
     auto r = std::make_shared<Rendered>();
 
+    Phrase main;
     if (getMode() == Mode::cinematic)
-        r->phrase = cinematic (source.empty() ? demoProgression (pi (ids::key), (scales::Scale) pi (ids::scale),
-                                                                 barChoices[std::clamp (pi (ids::bars), 0, 3)])
-                                              : source,
-                               readCineParams());
+        main = cinematic (source.empty() ? demoProgression (pi (ids::key), (scales::Scale) pi (ids::scale),
+                                                            barChoices[std::clamp (pi (ids::bars), 0, 3)])
+                                         : source,
+                          readCineParams());
     else if (getMode() == Mode::transform && ! source.empty())
-        r->phrase = applyVoicing (source, readVoicingParams());
+        main = applyVoicing (source, readVoicingParams());
     else
-        r->phrase = generateMelody (readGenParams());
+        main = generateMelody (readGenParams());
 
-    // Keep every note-off strictly inside the loop so wrap-around never leaves hanging notes.
-    const double L = r->phrase.lengthBeats;
-    for (auto& n : r->phrase.notes)
-        n.length = std::max (1.0 / 64.0, std::min (n.length, L - n.start - 1.0e-3));
-
-    shapeExpression (r->phrase, readExprParams());
-
-    RenderOptions ro;
-    ro.pitchBendRange = pi (ids::pbRange);
-    ro.includeZoneConfig = false; // the audio thread sends it at playback start
-    r->sequence = renderMpe (r->phrase, ro);
-    r->lengthBeats = L;
+    r->lengthBeats = main.lengthBeats;
+    r->streams.push_back (makeStream (0, std::move (main), readExprParams()));
 
     {
         const juce::SpinLock::ScopedLockType sl (renderLock);
@@ -349,8 +331,11 @@ void DarkMPEProcessor::rebuild()
             keepAlive.push_back (rendered);
         rendered = r;
     }
-    while (keepAlive.size() > 8)
-        keepAlive.pop_front();
+
+    // A render is freed here only once the audio thread has let go of it (it never drops the last reference).
+    keepAlive.erase (std::remove_if (keepAlive.begin(), keepAlive.end(),
+                                     [] (const auto& k) { return k.use_count() == 1; }),
+                     keepAlive.end());
 
     if (onRebuilt)
         onRebuilt();
@@ -482,7 +467,7 @@ juce::File DarkMPEProcessor::writeMidiFile (const juce::File& target) const
     RenderOptions ro;
     ro.pitchBendRange = pi (ids::pbRange);
     ro.includeZoneConfig = true;
-    const auto seq = renderMpe (r->phrase, ro);
+    const auto seq = renderMpe (r->focused().phrase, ro);
     const auto mf = makeMidiFile (seq, lastBpm.load(), suggestedFileName());
     return dmpe::writeMidiFile (mf, target) ? target : juce::File();
 }
@@ -496,56 +481,124 @@ juce::File DarkMPEProcessor::writeTempMidiForDrag() const
 }
 
 // ------------------------------------------------------------------ audio
-void DarkMPEProcessor::sendAllNotesOff (juce::MidiBuffer& out, int sampleOffset)
+namespace
+{
+constexpr juce::uint8 noteOffStatus = 0x80;
+
+void addNoteOffs (std::array<std::array<bool, 128>, 17>& table, juce::MidiBuffer& out, int sampleOffset)
 {
     for (int ch = 1; ch <= 16; ++ch)
     {
         bool any = false;
         for (int n = 0; n < 128; ++n)
-            if (active[(size_t) ch][(size_t) n])
+            if (table[(size_t) ch][(size_t) n])
             {
-                out.addEvent (juce::MidiMessage::noteOff (ch, n), sampleOffset);
-                active[(size_t) ch][(size_t) n] = false;
+                const juce::uint8 off[3] = { (juce::uint8) (noteOffStatus | (ch - 1)), (juce::uint8) n, 0 };
+                out.addEvent (off, 3, sampleOffset);
+                table[(size_t) ch][(size_t) n] = false;
                 any = true;
             }
         if (any)
-            out.addEvent (juce::MidiMessage::pitchWheel (ch, 8192), sampleOffset);
-        mon[(size_t) ch].note.store (-1, std::memory_order_relaxed);
+        {
+            const juce::uint8 centre[3] = { (juce::uint8) (0xe0 | (ch - 1)), 0x00, 0x40 };
+            out.addEvent (centre, 3, sampleOffset);
+        }
     }
 }
 
-void DarkMPEProcessor::finishBlock (juce::MidiBuffer& hostMidi, juce::MidiBuffer& out)
+bool isNoteOn (const juce::uint8* d) { return (d[0] & 0xf0) == 0x90 && d[2] > 0; }
+bool isNoteOff (const juce::uint8* d) { return (d[0] & 0xf0) == 0x80 || ((d[0] & 0xf0) == 0x90 && d[2] == 0); }
+} // namespace
+
+void DarkMPEProcessor::allNotesOff (int sampleOffset)
 {
+    for (auto& l : layers)
+        addNoteOffs (l.active, l.buffer, sampleOffset);
+    addNoteOffs (hostActive, hostBuffer, sampleOffset);
+    for (int ch = 1; ch <= 16; ++ch)
+        mon[(size_t) ch].note.store (-1, std::memory_order_relaxed);
+}
+
+void DarkMPEProcessor::playStream (const Stream& s, double startPpq, double blockBeats, double ppqPerSample, int numSamples)
+{
+    auto& layer = layers[(size_t) s.layer];
+    const double L = audioRendered->lengthBeats;
+    if (startPpq + blockBeats <= 0.0 || L <= 0.0 || s.events.empty())
+        return;
+
+    // Walk the loop, splitting the block at the wrap point.
+    double beatsDone = startPpq < 0.0 ? -startPpq : 0.0;
+    double pos = startPpq >= 0.0 ? std::fmod (startPpq, L) : 0.0;
+
+    while (beatsDone < blockBeats - 1.0e-12)
+    {
+        const double segEnd = std::min (L, pos + (blockBeats - beatsDone));
+        auto it = std::lower_bound (s.events.begin(), s.events.end(), pos,
+                                    [] (const PlayEvent& e, double t) { return e.beat < t; });
+
+        for (; it != s.events.end() && it->beat < segEnd; ++it)
+        {
+            const auto* d = it->data;
+            const int ch = (d[0] & 0x0f) + 1;
+            if (isNoteOn (d))
+                layer.active[(size_t) ch][d[1]] = true;
+            else if (isNoteOff (d))
+            {
+                if (! layer.active[(size_t) ch][d[1]])
+                    continue; // its note-on was skipped by a jump
+                layer.active[(size_t) ch][d[1]] = false;
+            }
+
+            const int sample = juce::jlimit (0, numSamples - 1, (int) ((beatsDone + (it->beat - pos)) / ppqPerSample));
+            layer.buffer.addEvent (d, it->size, sample);
+        }
+
+        beatsDone += segEnd - pos;
+        pos = segEnd >= L - 1.0e-12 ? 0.0 : segEnd;
+    }
+}
+
+void DarkMPEProcessor::finishBlock (juce::MidiBuffer& hostMidi, int numSamples)
+{
+    // Host output: the focused layer (plus note-offs owed to the host from an earlier focus).
+    hostBuffer.addEvents (layers[(size_t) hostLayer].buffer, 0, numSamples, 0);
+
     // MPE monitor: what each member channel is doing right now.
-    const float range = (float) pi (ids::pbRange);
-    for (const auto meta : out)
+    const float range = pbRangeParam->load (std::memory_order_relaxed);
+    for (const auto meta : hostBuffer)
     {
-        const auto& m = meta.getMessage();
-        const int ch = m.getChannel();
-        if (ch < 1 || ch > 16)
+        const auto* d = meta.data;
+        if (meta.numBytes < 2)
             continue;
+        const int ch = (d[0] & 0x0f) + 1;
         auto& c = mon[(size_t) ch];
-        if (m.isNoteOn())
-            c.note.store (m.getNoteNumber(), std::memory_order_relaxed);
-        else if (m.isNoteOff() && c.note.load (std::memory_order_relaxed) == m.getNoteNumber())
-            c.note.store (-1, std::memory_order_relaxed);
-        else if (m.isPitchWheel())
-            c.bend.store ((float) (m.getPitchWheelValue() - 8192) / 8192.0f * range, std::memory_order_relaxed);
-        else if (m.isController() && m.getControllerNumber() == 74)
-            c.slide.store ((float) m.getControllerValue() / 127.0f, std::memory_order_relaxed);
-        else if (m.isChannelPressure())
-            c.pressure.store ((float) m.getChannelPressureValue() / 127.0f, std::memory_order_relaxed);
+        const int type = d[0] & 0xf0;
+        if (meta.numBytes == 3 && isNoteOn (d))
+        {
+            hostActive[(size_t) ch][d[1]] = true;
+            c.note.store (d[1], std::memory_order_relaxed);
+        }
+        else if (meta.numBytes == 3 && isNoteOff (d))
+        {
+            hostActive[(size_t) ch][d[1]] = false;
+            if (c.note.load (std::memory_order_relaxed) == d[1])
+                c.note.store (-1, std::memory_order_relaxed);
+        }
+        else if (type == 0xe0 && meta.numBytes == 3)
+            c.bend.store ((float) ((d[1] | (d[2] << 7)) - 8192) / 8192.0f * range, std::memory_order_relaxed);
+        else if (type == 0xb0 && meta.numBytes == 3 && d[1] == 74)
+            c.slide.store ((float) d[2] / 127.0f, std::memory_order_relaxed);
+        else if (type == 0xd0)
+            c.pressure.store ((float) d[1] / 127.0f, std::memory_order_relaxed);
     }
 
-    // Same stream to the virtual port: Live receives true MPE from an MPE-enabled input.
-    if (! out.isEmpty())
-    {
-        const juce::SpinLock::ScopedTryLockType sl (portLock);
-        if (sl.isLocked() && port != nullptr)
-            port->sendBlockOfMessages (out, juce::Time::getMillisecondCounterHiRes() + 1.0, sampleRate);
-    }
+    // Each layer to its virtual port: Live receives true MPE from an MPE-enabled input.
+    const double nowMs = juce::Time::getMillisecondCounterHiRes() + 2.0;
+    for (int i = 0; i < PortHub::numPorts; ++i)
+        ports.push (i, layers[(size_t) i].buffer, nowMs, sampleRate);
 
-    hostMidi.swapWith (out);
+    hostMidi.clear();
+    hostMidi.addEvents (hostBuffer, 0, numSamples, 0);
 }
 
 void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::MidiBuffer& midi)
@@ -554,14 +607,17 @@ void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::Midi
     audio.clear();
 
     const int numSamples = audio.getNumSamples();
-    juce::MidiBuffer out;
+    for (auto& l : layers)
+        l.buffer.clear();
+    hostBuffer.clear();
 
     {
         const juce::SpinLock::ScopedTryLockType sl (renderLock);
         if (sl.isLocked() && audioRendered != rendered)
         {
             audioRendered = rendered;
-            sendAllNotesOff (out, 0); // new phrase: silence what is sounding so nothing hangs
+            allNotesOff (0); // new phrase: silence what is sounding so nothing hangs
+            hostLayer = audioRendered->focused().layer;
         }
     }
 
@@ -604,7 +660,6 @@ void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::Midi
         }
     }
     captureClock += blockBeats;
-    midi.clear();
 
     // ---- transport
     bool playing = false;
@@ -615,7 +670,7 @@ void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::Midi
         startPpq = *hostPpq;
         previewPpq = startPpq;
     }
-    else if (pb (ids::preview))
+    else if (previewParam->load (std::memory_order_relaxed) > 0.5f)
     {
         playing = true;
         startPpq = previewPpq;
@@ -627,65 +682,29 @@ void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::Midi
     if (! playing || audioRendered == nullptr)
     {
         if (wasPlaying)
-            sendAllNotesOff (out, 0);
+            allNotesOff (0);
         wasPlaying = false;
-        finishBlock (midi, out);
+        finishBlock (midi, numSamples);
         return;
     }
 
     if (! wasPlaying || std::abs (startPpq - expectedPpq) > 1.0e-3)
     {
-        sendAllNotesOff (out, 0);
-        for (const auto meta : juce::MPEMessages::setLowerZone (15, pi (ids::pbRange), 2))
-            out.addEvent (meta.getMessage(), 0);
+        allNotesOff (0);
+        for (const auto& s : audioRendered->streams)
+            for (const auto& e : s.startup)
+                layers[(size_t) s.layer].buffer.addEvent (e.data, e.size, 0);
     }
     wasPlaying = true;
     expectedPpq = startPpq + blockBeats;
 
-    const auto& seq = audioRendered->sequence;
     const double L = audioRendered->lengthBeats;
+    playheadBeats.store (startPpq >= 0.0 && L > 0.0 ? std::fmod (startPpq, L) : 0.0);
 
-    if (startPpq + blockBeats <= 0.0 || L <= 0.0)
-    {
-        finishBlock (midi, out);
-        return;
-    }
+    for (const auto& s : audioRendered->streams)
+        playStream (s, startPpq, blockBeats, ppqPerSample, numSamples);
 
-    // Walk the loop, splitting the block at the wrap point.
-    double beatsDone = 0.0;
-    double pos = startPpq >= 0.0 ? std::fmod (startPpq, L) : 0.0;
-    if (startPpq < 0.0)
-        beatsDone = -startPpq;
-
-    playheadBeats.store (pos);
-
-    while (beatsDone < blockBeats - 1.0e-12)
-    {
-        const double segEnd = std::min (L, pos + (blockBeats - beatsDone));
-        for (int i = seq.getNextIndexAtTime (pos); i < seq.getNumEvents(); ++i)
-        {
-            const auto& m = seq.getEventPointer (i)->message;
-            const double t = m.getTimeStamp();
-            if (t >= segEnd)
-                break;
-
-            const int sample = juce::jlimit (0, numSamples - 1, (int) ((beatsDone + (t - pos)) / ppqPerSample));
-            if (m.isNoteOn())
-                active[(size_t) m.getChannel()][(size_t) m.getNoteNumber()] = true;
-            else if (m.isNoteOff())
-            {
-                if (! active[(size_t) m.getChannel()][(size_t) m.getNoteNumber()])
-                    continue; // its note-on was skipped by a jump
-                active[(size_t) m.getChannel()][(size_t) m.getNoteNumber()] = false;
-            }
-            out.addEvent (m, sample);
-        }
-
-        beatsDone += segEnd - pos;
-        pos = segEnd >= L - 1.0e-12 ? 0.0 : segEnd;
-    }
-
-    finishBlock (midi, out);
+    finishBlock (midi, numSamples);
 }
 
 // ------------------------------------------------------------------ state

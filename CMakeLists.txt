@@ -41,6 +41,7 @@ juce_add_plugin(DarkMPE
 target_sources(DarkMPE PRIVATE
     ${ENGINE_SOURCES}
     Source/PluginProcessor.cpp
+    Source/PortHub.cpp
     Source/PluginEditor.cpp
     Source/ui/PianoRoll.cpp
     Source/ui/MpeMonitor.cpp)
@@ -79,6 +80,7 @@ juce_add_console_app(DarkMPEProcessorTests PRODUCT_NAME "DarkMPEProcessorTests")
 target_sources(DarkMPEProcessorTests PRIVATE
     ${ENGINE_SOURCES}
     Source/PluginProcessor.cpp
+    Source/PortHub.cpp
     Source/PluginEditor.cpp
     Source/ui/PianoRoll.cpp
     Source/ui/MpeMonitor.cpp

@@ -103,4 +103,31 @@ juce::MidiMessageSequence renderMpe (const Phrase& input, const RenderOptions& o
     return seq;
 }
 
+std::vector<PlayEvent> toPlayEvents (const juce::MidiMessageSequence& seq)
+{
+    std::vector<PlayEvent> out;
+    out.reserve ((size_t) seq.getNumEvents());
+    for (auto* ev : seq)
+    {
+        const auto& m = ev->message;
+        const int size = m.getRawDataSize();
+        if (m.isMetaEvent() || m.isSysEx() || size < 1 || size > 3)
+            continue;
+        PlayEvent e;
+        e.beat = m.getTimeStamp();
+        e.size = (juce::uint8) size;
+        std::copy (m.getRawData(), m.getRawData() + size, e.data);
+        out.push_back (e);
+    }
+    return out;
+}
+
+std::vector<PlayEvent> zoneConfigEvents (int pitchBendRange, int memberChannels)
+{
+    juce::MidiMessageSequence seq;
+    for (const auto meta : juce::MPEMessages::setLowerZone (memberChannels, pitchBendRange, 2))
+        seq.addEvent (meta.getMessage(), 0.0);
+    return toPlayEvents (seq);
+}
+
 } // namespace dmpe

@@ -20,4 +20,18 @@ juce::MidiMessageSequence renderMpe (const Phrase& phrase, const RenderOptions& 
 
 int bendToMidi (float semitones, int range);
 
+// A short MIDI message at a beat position: what the audio thread plays (no allocation, binary-searchable).
+struct PlayEvent
+{
+    double beat = 0.0;
+    juce::uint8 data[3] {};
+    juce::uint8 size = 0;
+};
+
+// Channel-voice messages of a beat-timed sequence, in order (meta and sysex events are dropped).
+std::vector<PlayEvent> toPlayEvents (const juce::MidiMessageSequence& seq);
+
+// MPE lower-zone configuration (MCM + member pitch-bend range), sent when playback starts.
+std::vector<PlayEvent> zoneConfigEvents (int pitchBendRange, int memberChannels = 15);
+
 } // namespace dmpe

@@ -49,7 +49,7 @@ void PianoRoll::paint (juce::Graphics& g)
     if (shown == nullptr)
         return;
 
-    const auto& phrase = shown->phrase;
+    const auto& phrase = shown->focused().phrase;
     const double L = std::max (1.0, shown->lengthBeats);
 
     int lo = 127, hi = 0;

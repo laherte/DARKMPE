@@ -3,9 +3,33 @@
 
 #include "PluginProcessor.h"
 
+#include <chrono>
 #include <iostream>
 #include <map>
 #include <set>
+
+// ---- heap allocation counter (glibc only): the audio thread must never allocate.
+#if defined(__GLIBC__)
+extern "C" void* __libc_malloc (size_t);
+extern "C" void* __libc_calloc (size_t, size_t);
+extern "C" void* __libc_realloc (void*, size_t);
+extern "C" void __libc_free (void*);
+
+namespace
+{
+thread_local bool countAllocations = false;
+std::atomic<long> allocations { 0 };
+void noteAllocation() { if (countAllocations) allocations.fetch_add (1, std::memory_order_relaxed); }
+} // namespace
+
+extern "C" void* malloc (size_t n) noexcept { noteAllocation(); return __libc_malloc (n); }
+extern "C" void* calloc (size_t n, size_t s) noexcept { noteAllocation(); return __libc_calloc (n, s); }
+extern "C" void* realloc (void* p, size_t n) noexcept { noteAllocation(); return __libc_realloc (p, n); }
+extern "C" void free (void* p) noexcept { __libc_free (p); }
+ #define DARKMPE_COUNTS_ALLOCATIONS 1
+#else
+ #define DARKMPE_COUNTS_ALLOCATIONS 0
+#endif
 
 namespace
 {
@@ -35,6 +59,34 @@ std::vector<Captured> run (DarkMPEProcessor& proc, int blocks, int blockSize, lo
         clock += blockSize;
     }
     return out;
+}
+
+// Plays `blocks` blocks into a host buffer that is reused (like a real host) and returns
+// {heap allocations inside processBlock, average microseconds per block}.
+std::pair<long, double> measure (DarkMPEProcessor& proc, int blocks, int blockSize)
+{
+    juce::AudioBuffer<float> audio (2, blockSize);
+    juce::MidiBuffer midi;
+    midi.ensureSize (65536);
+    double total = 0.0;
+    long allocs = 0;
+    for (int b = 0; b < blocks; ++b)
+    {
+        midi.clear();
+       #if DARKMPE_COUNTS_ALLOCATIONS
+        const long before = allocations.load();
+        countAllocations = true;
+       #endif
+        const auto t0 = std::chrono::steady_clock::now();
+        proc.processBlock (audio, midi);
+        total += std::chrono::duration<double, std::micro> (std::chrono::steady_clock::now() - t0).count();
+       #if DARKMPE_COUNTS_ALLOCATIONS
+        countAllocations = false;
+        if (b > 0) // the very first block may lazily set things up
+            allocs += allocations.load() - before;
+       #endif
+    }
+    return { allocs, total / blocks };
 }
 
 } // namespace
@@ -162,6 +214,28 @@ public:
             proc.prepareToPlay (48000.0, blockSize);
             long long clock = 0;
             checkMpe (run (proc, blocksFor8Bars, blockSize, clock), "generate", 1);
+        }
+
+        beginTest ("Audio thread: no heap allocations, cost per block");
+        {
+            for (int motion : { 0, 1 }) // Morph (long dense notes), Bloom (many short notes)
+            {
+                DarkMPEProcessor proc;
+                setParam (proc, "virtualOut", 0.0f);
+                setParam (proc, "mode", 2.0f);
+                setParam (proc, "bars", 3.0f); // 8 bars
+                setParam (proc, "cMotion", (float) motion);
+                setParam (proc, "preview", 1.0f);
+                proc.refreshNow();
+                proc.prepareToPlay (48000.0, 64);
+                const int blocks = (int) (32.0 * 48000.0 / 64.0); // 16 bars at 120 bpm: loops twice
+                const auto [allocs, usPerBlock] = measure (proc, blocks, 64);
+                std::cout << "    cinematic motion " << motion << ": " << juce::String (usPerBlock, 2)
+                          << " us/block (64 samples), allocations in processBlock: " << allocs << std::endl;
+               #if DARKMPE_COUNTS_ALLOCATIONS
+                expectEquals ((int) allocs, 0, "processBlock allocated memory");
+               #endif
+            }
         }
     }
 };

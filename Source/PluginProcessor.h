@@ -3,24 +3,39 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "PortHub.h"
 #include "engine/CinematicEngine.h"
 #include "engine/ExpressionShaper.h"
 #include "engine/MidiFileIO.h"
 #include "engine/MelodyGenerator.h"
+#include "engine/MpeRenderer.h"
 #include "engine/VoicingEngine.h"
 #include "model/Phrase.h"
 
 #include <array>
 #include <atomic>
-#include <deque>
 #include <memory>
+#include <vector>
+
+// One output stream of a render: the main line, or one layer of a KIT. Each stream has its own
+// MPE zone, its own virtual port and its own note bookkeeping on the audio thread.
+struct Stream
+{
+    int layer = 0;                         // 0 = main output (also the KIT lead), 1.. = other KIT layers
+    dmpe::Phrase phrase;
+    std::vector<dmpe::PlayEvent> events;   // the loop, beat-timed and sorted
+    std::vector<dmpe::PlayEvent> startup;  // sent when playback (re)starts: zone configuration / bend range
+    bool mono = false;
+};
 
 // Result of a rebuild, shared read-only between UI and audio thread.
 struct Rendered
 {
-    dmpe::Phrase phrase;
-    juce::MidiMessageSequence sequence; // timestamps in beats
+    std::vector<Stream> streams;
+    int focus = 0;           // index into streams: drawn in the UI, sent to the host MIDI out
     double lengthBeats = 4.0;
+
+    const Stream& focused() const { return streams[(size_t) focus]; }
 };
 
 class DarkMPEProcessor : public juce::AudioProcessor,
@@ -90,7 +105,7 @@ public:
     const ChannelMonitor& monitor (int channel) const { return mon[(size_t) juce::jlimit (1, 16, channel)]; }
 
     juce::String getPortName() const { return portName; }
-    bool isPortOpen() const { return portOpen.load(); }
+    bool isPortOpen() const { return ports.isOpen (0); }
 
     void refreshNow() { rebuild(); } // synchronous rebuild (tests / immediate UI actions)
 
@@ -112,34 +127,50 @@ private:
     int pi (const char* id) const;
     bool pb (const char* id) const;
 
-    void sendAllNotesOff (juce::MidiBuffer& out, int sampleOffset);
-    void finishBlock (juce::MidiBuffer& hostMidi, juce::MidiBuffer& out); // monitor + virtual port + host
-    void updatePort();                                                   // message thread
+    Stream makeStream (int layer, dmpe::Phrase phrase, const dmpe::ExprParams& expr) const;
 
-    // ---- virtual MIDI port "DarkMPE Out"
-    juce::SpinLock portLock;
-    std::unique_ptr<juce::MidiOutput> port;
+    // ---- audio thread
+    using NoteTable = std::array<std::array<bool, 128>, 17>;
+    void allNotesOff (int sampleOffset);  // every layer (to its port) and the host output
+    void playStream (const Stream& s, double startPpq, double blockBeats, double ppqPerSample, int numSamples);
+    void finishBlock (juce::MidiBuffer& hostMidi, int numSamples); // host out + monitor + virtual ports
+    void updatePorts();                                            // message thread
+
+    // ---- virtual MIDI ports ("DarkMPE Out" + KIT layers)
+    PortHub ports;
     juce::String portName;
-    std::atomic<bool> portOpen { false };
     std::atomic<bool> portAllowed { false }; // only after prepareToPlay: never open ports during plugin scans
     std::array<ChannelMonitor, 17> mon;
 
     // ---- shared state
     mutable juce::SpinLock renderLock;
     std::shared_ptr<const Rendered> rendered;
-    std::deque<std::shared_ptr<const Rendered>> keepAlive; // old renders released on the message thread
+    std::vector<std::shared_ptr<const Rendered>> keepAlive; // old renders, freed on the message thread only
 
     dmpe::Phrase source;
     juce::String sourceName;
     dmpe::LoadInfo sourceInfo;
 
     // ---- audio thread
+    struct LayerState
+    {
+        NoteTable active {};
+        juce::MidiBuffer buffer; // preallocated in prepareToPlay
+    };
+    std::array<LayerState, PortHub::numPorts> layers;
+    NoteTable hostActive {};
+    juce::MidiBuffer hostBuffer;
+    int hostLayer = 0;
+
+    // parameters read by the audio thread, looked up once
+    std::atomic<float>* pbRangeParam = nullptr;
+    std::atomic<float>* previewParam = nullptr;
+
     std::shared_ptr<const Rendered> audioRendered;
     double sampleRate = 44100.0;
     double expectedPpq = 0.0;
     double previewPpq = 0.0;
     bool wasPlaying = false;
-    std::array<std::array<bool, 128>, 17> active {};
     std::atomic<double> playheadBeats { 0.0 };
     std::atomic<bool> playingBack { false };
     std::atomic<double> lastBpm { 120.0 };
