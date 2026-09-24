@@ -74,6 +74,7 @@ constexpr const char* preview = "preview";
 constexpr const char* virtualOut = "virtualOut";
 constexpr const char* leadMono = "leadMono";
 constexpr const char* monoBend = "monoBend";
+constexpr const char* trigMode = "trigMode";
 } // namespace ids
 
 static const int barChoices[] = { 1, 2, 4, 8 };
@@ -159,6 +160,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout DarkMPEProcessor::createLayo
     boolean (ids::virtualOut, "Virtual MIDI Out", true);
     boolean (ids::leadMono, "Mono Lead Out", false);
     integer (ids::monoBend, "Mono Bend Range", 1, 48, 12);
+    choice (ids::trigMode, "Key Trigger", { "Off", "Transpose", "Gate" }, 0);
 
     return l;
 }
@@ -182,6 +184,8 @@ DarkMPEProcessor::DarkMPEProcessor()
 
     pbRangeParam = apvts.getRawParameterValue (ids::pbRange);
     previewParam = apvts.getRawParameterValue (ids::preview);
+    trigModeParam = apvts.getRawParameterValue (ids::trigMode);
+    keyParam = apvts.getRawParameterValue (ids::key);
 
     rebuild();
 }
@@ -643,6 +647,30 @@ namespace
 {
 constexpr juce::uint8 noteOffStatus = 0x80;
 
+void pitchBendCentre (juce::MidiBuffer& out, int ch, int sampleOffset)
+{
+    const juce::uint8 centre[3] = { (juce::uint8) (0xe0 | (ch - 1)), 0x00, 0x40 };
+    out.addEvent (centre, 3, sampleOffset);
+}
+
+void addNoteOffs (std::array<std::array<juce::int8, 128>, 17>& table, juce::MidiBuffer& out, int sampleOffset)
+{
+    for (int ch = 1; ch <= 16; ++ch)
+    {
+        bool any = false;
+        for (auto& emitted : table[(size_t) ch])
+            if (emitted >= 0)
+            {
+                const juce::uint8 off[3] = { (juce::uint8) (noteOffStatus | (ch - 1)), (juce::uint8) emitted, 0 };
+                out.addEvent (off, 3, sampleOffset);
+                emitted = -1;
+                any = true;
+            }
+        if (any)
+            pitchBendCentre (out, ch, sampleOffset);
+    }
+}
+
 void addNoteOffs (std::array<std::array<bool, 128>, 17>& table, juce::MidiBuffer& out, int sampleOffset)
 {
     for (int ch = 1; ch <= 16; ++ch)
@@ -657,10 +685,7 @@ void addNoteOffs (std::array<std::array<bool, 128>, 17>& table, juce::MidiBuffer
                 any = true;
             }
         if (any)
-        {
-            const juce::uint8 centre[3] = { (juce::uint8) (0xe0 | (ch - 1)), 0x00, 0x40 };
-            out.addEvent (centre, 3, sampleOffset);
-        }
+            pitchBendCentre (out, ch, sampleOffset);
     }
 }
 
@@ -698,16 +723,33 @@ void DarkMPEProcessor::playStream (const Stream& s, double startPpq, double bloc
         {
             const auto* d = it->data;
             const int ch = (d[0] & 0x0f) + 1;
-            if (isNoteOn (d))
-                layer.active[(size_t) ch][d[1]] = true;
-            else if (isNoteOff (d))
+            const int sample = juce::jlimit (0, numSamples - 1, (int) ((beatsDone + (it->beat - pos)) / ppqPerSample));
+            auto& emitted = layer.active[(size_t) ch][d[1]];
+
+            if (isNoteOn (d) || isNoteOff (d))
             {
-                if (! layer.active[(size_t) ch][d[1]])
-                    continue; // its note-on was skipped by a jump
-                layer.active[(size_t) ch][d[1]] = false;
+                juce::uint8 msg[3] = { d[0], d[1], d[2] };
+                if (isNoteOn (d))
+                {
+                    if (emitted >= 0) // same source note again on this channel: end the previous one first
+                    {
+                        const juce::uint8 off[3] = { (juce::uint8) (noteOffStatus | (ch - 1)), (juce::uint8) emitted, 0 };
+                        layer.buffer.addEvent (off, 3, sample);
+                    }
+                    msg[1] = (juce::uint8) juce::jlimit (0, 127, d[1] + transpose); // Key Trigger
+                    emitted = (juce::int8) msg[1];
+                }
+                else
+                {
+                    if (emitted < 0)
+                        continue; // its note-on was skipped by a jump
+                    msg[1] = (juce::uint8) emitted; // the pitch it started on, whatever the transpose is now
+                    emitted = -1;
+                }
+                layer.buffer.addEvent (msg, 3, sample);
+                continue;
             }
 
-            const int sample = juce::jlimit (0, numSamples - 1, (int) ((beatsDone + (it->beat - pos)) / ppqPerSample));
             layer.buffer.addEvent (d, it->size, sample);
         }
 
@@ -757,6 +799,63 @@ void DarkMPEProcessor::finishBlock (juce::MidiBuffer& hostMidi, int numSamples)
 
     hostMidi.clear();
     hostMidi.addEvents (hostBuffer, 0, numSamples, 0);
+}
+
+void DarkMPEProcessor::readKeys (const juce::MidiBuffer& midi, int trigger, double blockClock, double ppqPerSample)
+{
+    if (trigger == 0)
+    {
+        held.fill (false);
+        heldCount = 0;
+        lastKey = -1;
+        transpose = 0;
+        transposeShown.store (0, std::memory_order_relaxed);
+        return;
+    }
+
+    for (const auto meta : midi)
+    {
+        if (meta.numBytes != 3)
+            continue;
+        const auto* d = meta.data;
+        const int note = d[1];
+        if (isNoteOn (d))
+        {
+            if (heldCount == 0)
+                gateOrigin = blockClock + meta.samplePosition * ppqPerSample; // sample-accurate restart
+            if (! held[(size_t) note])
+            {
+                held[(size_t) note] = true;
+                ++heldCount;
+            }
+            keyOrder[(size_t) note] = ++keyCounter;
+            lastKey = note;
+        }
+        else if (isNoteOff (d) && held[(size_t) note])
+        {
+            held[(size_t) note] = false;
+            --heldCount;
+            if (note == lastKey && heldCount > 0)
+            {
+                // Back to the most recent key still held.
+                juce::uint32 newest = 0;
+                for (int k = 0; k < 128; ++k)
+                    if (held[(size_t) k] && keyOrder[(size_t) k] >= newest)
+                    {
+                        newest = keyOrder[(size_t) k];
+                        lastKey = k;
+                    }
+            }
+        }
+    }
+
+    // Transpose relative to the Key, folded to -5..+6 so the register stays put; it latches after release.
+    if (lastKey >= 0)
+    {
+        int t = scales::mod (lastKey - (int) std::lround (keyParam->load (std::memory_order_relaxed)), 12);
+        transpose = t > 6 ? t - 12 : t;
+    }
+    transposeShown.store (transpose, std::memory_order_relaxed);
 }
 
 void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::MidiBuffer& midi)
@@ -820,10 +919,22 @@ void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::Midi
     }
     captureClock += blockBeats;
 
+    // ---- key trigger (not while capturing: then the input is being recorded)
+    const int trigger = capturing.load() ? 0 : (int) std::lround (trigModeParam->load (std::memory_order_relaxed));
+    const double blockClock = (hostPlaying && hostPpq) ? *hostPpq : freeClock;
+    freeClock += blockBeats;
+    readKeys (midi, trigger, blockClock, ppqPerSample);
+
     // ---- transport
     bool playing = false;
     double startPpq = 0.0;
-    if (hostPlaying && hostPpq)
+    if (trigger == 2)
+    {
+        // Gate: the loop plays while a key is held, from its start at the moment of the first key.
+        playing = heldCount > 0;
+        startPpq = blockClock - gateOrigin;
+    }
+    else if (hostPlaying && hostPpq)
     {
         playing = true;
         startPpq = *hostPpq;

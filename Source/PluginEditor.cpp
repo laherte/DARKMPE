@@ -236,6 +236,7 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
                               { "breath", "Breath" } })
         knob (exprControls, id, label);
 
+    choice (outControls, "trigMode", "Key Trigger");
     toggle (outControls, "virtualOut", "Port Out");
     toggle (outControls, "leadMono", "Mono Lead");
     knob (outControls, "pbRange", "MPE Bend");

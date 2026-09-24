@@ -118,6 +118,7 @@ public:
     const ChannelMonitor& monitor (int channel) const { return mon[(size_t) juce::jlimit (1, 16, channel)]; }
 
     juce::String getPortName() const { return portName; }
+    int getTranspose() const { return transposeShown.load (std::memory_order_relaxed); } // Key Trigger, semitones
     bool isHostMono() const { return hostMono.load (std::memory_order_relaxed); } // host out is the mono (channel 1) line
     bool isPortOpen() const { return ports.isOpen (0); }
 
@@ -128,6 +129,13 @@ public:
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
+    static std::array<std::array<juce::int8, 128>, 17> makeEmittedTable()
+    {
+        std::array<std::array<juce::int8, 128>, 17> t;
+        for (auto& row : t)
+            row.fill (-1);
+        return t;
+    }
     void parameterChanged (const juce::String&, float) override { triggerAsyncUpdate(); }
     void handleAsyncUpdate() override { rebuild(); }
     void rebuild();
@@ -148,7 +156,8 @@ private:
     Stream makeStream (int layer, dmpe::Phrase phrase, const dmpe::ExprParams& expr, bool mono) const;
 
     // ---- audio thread
-    using NoteTable = std::array<std::array<bool, 128>, 17>;
+    using NoteTable = std::array<std::array<bool, 128>, 17>;             // sounding (channel, pitch)
+    using EmittedTable = std::array<std::array<juce::int8, 128>, 17>;   // pitch sent per (channel, source pitch), -1 = off
     void allNotesOff (int sampleOffset);  // every layer (to its port) and the host output
     void playStream (const Stream& s, double startPpq, double blockBeats, double ppqPerSample, int numSamples);
     void finishBlock (juce::MidiBuffer& hostMidi, int numSamples); // host out + monitor + virtual ports
@@ -173,7 +182,7 @@ private:
     // ---- audio thread
     struct LayerState
     {
-        NoteTable active {};
+        EmittedTable active = makeEmittedTable(); // transposed notes are turned off at the pitch they started on
         juce::MidiBuffer buffer; // preallocated in prepareToPlay
     };
     std::array<LayerState, PortHub::numPorts> layers;
@@ -184,6 +193,17 @@ private:
     // parameters read by the audio thread, looked up once
     std::atomic<float>* pbRangeParam = nullptr;
     std::atomic<float>* previewParam = nullptr;
+    std::atomic<float>* trigModeParam = nullptr;
+    std::atomic<float>* keyParam = nullptr;
+
+    // ---- key trigger (audio thread)
+    void readKeys (const juce::MidiBuffer& midi, int trigger, double blockClock, double ppqPerSample);
+    std::array<bool, 128> held {};
+    std::array<juce::uint32, 128> keyOrder {};
+    juce::uint32 keyCounter = 0;
+    int heldCount = 0, lastKey = -1, transpose = 0;
+    double gateOrigin = 0.0, freeClock = 0.0;
+    std::atomic<int> transposeShown { 0 };
 
     std::shared_ptr<const Rendered> audioRendered;
     double sampleRate = 44100.0;

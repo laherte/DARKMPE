@@ -17,6 +17,7 @@ void MpeMonitor::timerCallback()
     size_t i = 0;
     now[i++] = proc.isPortOpen() ? 1 : 0;
     now[i++] = proc.isHostMono() ? 1 : 0;
+    now[i++] = proc.getTranspose();
     for (int ch = 1; ch <= 16; ++ch)
     {
         const auto& m = proc.monitor (ch);
@@ -50,6 +51,12 @@ void MpeMonitor::paint (juce::Graphics& g)
     g.setColour (proc.isPortOpen() ? slideCol() : textDim());
     g.setFont (juce::FontOptions (9.0f));
     g.drawText (proc.isPortOpen() ? proc.getPortName() : "port off", label.reduced (4, 0), juce::Justification::topLeft);
+    if (const int t = proc.getTranspose(); t != 0)
+    {
+        g.setColour (chrome());
+        g.drawText ("transpose " + juce::String (t > 0 ? "+" : "") + juce::String (t), label.reduced (4, 0).withTrimmedTop (12),
+                    juce::Justification::topLeft);
+    }
 
     const float w = area.getWidth() / 15.0f;
     static const char* names[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };

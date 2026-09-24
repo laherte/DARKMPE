@@ -61,6 +61,46 @@ std::vector<Captured> run (DarkMPEProcessor& proc, int blocks, int blockSize, lo
     return out;
 }
 
+// Like run(), feeding `input` (block index -> messages at sample 0) into the plugin's MIDI input.
+std::vector<Captured> runWithInput (DarkMPEProcessor& proc, int blocks, int blockSize, long long& clock,
+                                    const std::map<int, std::vector<juce::MidiMessage>>& input)
+{
+    std::vector<Captured> out;
+    juce::AudioBuffer<float> audio (2, blockSize);
+    for (int b = 0; b < blocks; ++b)
+    {
+        juce::MidiBuffer midi;
+        if (auto it = input.find (b); it != input.end())
+            for (const auto& m : it->second)
+                midi.addEvent (m, 0);
+        proc.processBlock (audio, midi);
+        for (const auto meta : midi)
+            out.push_back ({ clock + meta.samplePosition, meta.getMessage() });
+        clock += blockSize;
+    }
+    return out;
+}
+
+int hangingNotes (const std::vector<Captured>& events)
+{
+    std::set<std::pair<int, int>> open;
+    for (const auto& e : events)
+    {
+        if (e.msg.isNoteOn()) open.insert ({ e.msg.getChannel(), e.msg.getNoteNumber() });
+        else if (e.msg.isNoteOff()) open.erase ({ e.msg.getChannel(), e.msg.getNoteNumber() });
+    }
+    return (int) open.size();
+}
+
+std::vector<int> notePitches (const std::vector<Captured>& events)
+{
+    std::vector<int> v;
+    for (const auto& e : events)
+        if (e.msg.isNoteOn())
+            v.push_back (e.msg.getNoteNumber());
+    return v;
+}
+
 // Plays `blocks` blocks into a host buffer that is reused (like a real host) and returns
 // {heap allocations inside processBlock, average microseconds per block}.
 std::pair<long, double> measure (DarkMPEProcessor& proc, int blocks, int blockSize)
@@ -243,6 +283,76 @@ public:
             expectGreaterThan (bends, 10);
             expect (range, "mono bend range (RPN 0) not sent");
             expect (proc.isHostMono());
+        }
+
+        beginTest ("Key Trigger: transpose follows the played key, gate plays only while held");
+        {
+            auto makeLead = [] (DarkMPEProcessor& p, int trig)
+            {
+                setParam (p, "virtualOut", 0.0f);
+                setParam (p, "mode", 0.0f);
+                setParam (p, "key", 9.0f); // A
+                setParam (p, "trigMode", (float) trig);
+                p.setSeed (4242, 0);
+                p.refreshNow();
+                p.prepareToPlay (48000.0, blockSize);
+            };
+
+            // Transpose: C (3 semitones above A) shifts every note by +3 against the same seed untransposed.
+            DarkMPEProcessor plain, shifted;
+            makeLead (plain, 0);
+            makeLead (shifted, 1);
+            setParam (plain, "preview", 1.0f);
+            setParam (shifted, "preview", 1.0f);
+            long long c1 = 0, c2 = 0;
+            const auto a = notePitches (run (plain, 200, blockSize, c1));
+            const auto b = notePitches (runWithInput (shifted, 200, blockSize, c2, { { 0, { juce::MidiMessage::noteOn (1, 60, 0.8f) } } }));
+            expectEquals ((int) a.size(), (int) b.size());
+            bool plus3 = ! a.empty();
+            for (size_t i = 0; i < a.size() && i < b.size(); ++i)
+                plus3 = plus3 && b[i] == a[i] + 3;
+            expect (plus3, "transpose must shift every note by +3");
+            expectEquals (shifted.getTranspose(), 3);
+
+            // F (4 semitones below A) folds to -4.
+            long long c3 = 0;
+            runWithInput (shifted, 2, blockSize, c3, { { 0, { juce::MidiMessage::noteOn (1, 65, 0.8f) } } });
+            expectEquals (shifted.getTranspose(), -4);
+
+            // Gate: nothing without keys (transport stopped, no preview), notes while held, all released after.
+            DarkMPEProcessor gate;
+            makeLead (gate, 2);
+            long long c4 = 0;
+            const auto silent = run (gate, 50, blockSize, c4);
+            expectEquals ((int) notePitches (silent).size(), 0, "gate must be silent without keys");
+            auto events = runWithInput (gate, 200, blockSize, c4, { { 0, { juce::MidiMessage::noteOn (1, 57, 0.8f) } },
+                                                                    { 150, { juce::MidiMessage::noteOff (1, 57) } } });
+            const auto tail = run (gate, 5, blockSize, c4);
+            events.insert (events.end(), tail.begin(), tail.end());
+            expectGreaterThan ((int) notePitches (events).size(), 5, "gate must play while a key is held");
+            expectEquals (hangingNotes (events), 0, "gate release left notes on");
+            int afterRelease = 0;
+            const long long released = (50 + 150 + 1) * (long long) blockSize; // after the silent 50 blocks
+            for (const auto& e : events)
+                afterRelease += (e.msg.isNoteOn() && e.sample >= released) ? 1 : 0;
+            expectEquals (afterRelease, 0, "notes after the key was released");
+
+            // Changing the transpose while long cinematic notes sound never leaves notes on.
+            DarkMPEProcessor cine;
+            setParam (cine, "virtualOut", 0.0f);
+            setParam (cine, "mode", 2.0f);
+            setParam (cine, "trigMode", 1.0f);
+            setParam (cine, "preview", 1.0f);
+            cine.refreshNow();
+            cine.prepareToPlay (48000.0, blockSize);
+            long long c5 = 0;
+            auto cineEvents = runWithInput (cine, 300, blockSize, c5, { { 0, { juce::MidiMessage::noteOn (1, 60, 0.8f) } },
+                                                                        { 120, { juce::MidiMessage::noteOn (1, 62, 0.8f) } },
+                                                                        { 200, { juce::MidiMessage::noteOff (1, 62), juce::MidiMessage::noteOff (1, 60) } } });
+            setParam (cine, "preview", 0.0f);
+            const auto stop = run (cine, 3, blockSize, c5);
+            cineEvents.insert (cineEvents.end(), stop.begin(), stop.end());
+            expectEquals (hangingNotes (cineEvents), 0, "transpose change left notes on");
         }
 
         beginTest ("Seed history and favourites survive the saved state");
