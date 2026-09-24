@@ -211,6 +211,8 @@ DarkMPEProcessor::DarkMPEProcessor()
             if (wp->paramID != ids::preview)
                 apvts.addParameterListener (wp->paramID, this);
 
+    startTimerHz (4); // watches for the first playback (see allowPorts)
+
     pbRangeParam = apvts.getRawParameterValue (ids::pbRange);
     previewParam = apvts.getRawParameterValue (ids::preview);
     trigModeParam = apvts.getRawParameterValue (ids::trigMode);
@@ -221,6 +223,7 @@ DarkMPEProcessor::DarkMPEProcessor()
 
 DarkMPEProcessor::~DarkMPEProcessor()
 {
+    stopTimer();
     cancelPendingUpdate();
 }
 
@@ -272,9 +275,18 @@ void DarkMPEProcessor::prepareToPlay (double sr, int)
         l.buffer.ensureSize (32768);
     hostBuffer.ensureSize (32768);
 
-    // The port is created on the message thread once the host actually runs us.
+}
+
+void DarkMPEProcessor::allowPorts()
+{
     if (! portAllowed.exchange (true))
-        triggerAsyncUpdate();
+        triggerAsyncUpdate(); // opened by the rebuild, on the message thread
+}
+
+void DarkMPEProcessor::timerCallback()
+{
+    if (playedOnce.load() && ! portAllowed.load())
+        allowPorts();
 }
 
 // ------------------------------------------------------------------ parameters
@@ -471,7 +483,10 @@ void DarkMPEProcessor::buildKit (Rendered& r)
 
 void DarkMPEProcessor::rebuild()
 {
-    updatePorts();
+    const juce::ScopedLock sl (rebuildLock);
+    const bool messageThread = juce::MessageManager::existsAndIsCurrentThread();
+    if (messageThread)
+        updatePorts();
 
     auto r = std::make_shared<Rendered>();
 
@@ -533,7 +548,9 @@ void DarkMPEProcessor::rebuild()
                                      [] (const auto& k) { return k.use_count() == 1; }),
                      keepAlive.end());
 
-    if (onRebuilt)
+    if (! messageThread)
+        triggerAsyncUpdate(); // ports and UI follow on the message thread
+    else if (onRebuilt)
         onRebuilt();
 }
 
@@ -654,9 +671,12 @@ bool DarkMPEProcessor::loadMidi (const juce::File& file, juce::String& error)
     if (! loadMidiFile (file, p, error, &info))
         return false;
 
-    source = std::move (p);
-    sourceInfo = info;
-    sourceName = file.getFileNameWithoutExtension();
+    {
+        const juce::ScopedLock sl (rebuildLock);
+        source = std::move (p);
+        sourceInfo = info;
+        sourceName = file.getFileNameWithoutExtension();
+    }
     if (getMode() == Mode::generate)
         setMode (Mode::transform);
     rebuild();
@@ -721,9 +741,12 @@ void DarkMPEProcessor::finishCapture()
     if (p.empty())
         return;
 
-    source = std::move (p);
-    sourceInfo = info;
-    sourceName = "Captured";
+    {
+        const juce::ScopedLock sl (rebuildLock);
+        source = std::move (p);
+        sourceInfo = info;
+        sourceName = "Captured";
+    }
     if (getMode() == Mode::generate)
         setMode (Mode::transform);
     rebuild();
@@ -1105,6 +1128,8 @@ void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::Midi
     }
 
     playingBack.store (playing);
+    if (playing && ! playedOnce.load (std::memory_order_relaxed))
+        playedOnce.store (true, std::memory_order_relaxed);
 
     if (! playing || audioRendered == nullptr)
     {
@@ -1137,8 +1162,10 @@ void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::Midi
 // ------------------------------------------------------------------ state
 void DarkMPEProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
+    const juce::ScopedLock sl (rebuildLock);
     auto state = apvts.copyState();
     state.removeChild (state.getChildWithName ("Source"), nullptr);
+    state.setProperty ("program", currentProgram.load(), nullptr);
 
     if (! source.empty())
     {
@@ -1163,6 +1190,7 @@ void DarkMPEProcessor::setStateInformation (const void* data, int sizeInBytes)
     if (xml == nullptr || ! xml->hasTagName (apvts.state.getType()))
         return;
 
+    const juce::ScopedLock sl (rebuildLock);
     auto state = juce::ValueTree::fromXml (*xml);
     const auto src = state.getChildWithName ("Source");
     if (src.isValid())
@@ -1185,13 +1213,32 @@ void DarkMPEProcessor::setStateInformation (const void* data, int sizeInBytes)
     }
 
     apvts.replaceState (state);
+
+    // replaceState skips parameters whose value "looks" unchanged (a bool at 0.87 is already "on"): set each one
+    // exactly to the saved value.
+    for (auto* p : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+        {
+            const auto saved = state.getChildWithProperty ("id", rp->paramID);
+            if (! saved.isValid() || ! saved.hasProperty ("value"))
+                continue;
+            const float v = rp->convertTo0to1 ((float) saved.getProperty ("value"));
+            if (std::abs (rp->getValue() - v) > 1.0e-6f)
+                rp->setValueNotifyingHost (v);
+        }
+
+    currentProgram.store (juce::jlimit (0, getNumPrograms() - 1, (int) state.getProperty ("program", 0)));
+    pendingProgram.store (-1);
+
+    // A project is being loaded: this instance is in use, its ports can appear.
+    portAllowed.store (true);
     rebuild();
 }
 
 // ------------------------------------------------------------------ presets
 int DarkMPEProcessor::getNumPrograms() { return (int) presets::factory().size(); }
 
-int DarkMPEProcessor::getCurrentProgram() { return (int) apvts.state.getProperty ("program", 0); }
+int DarkMPEProcessor::getCurrentProgram() { return currentProgram.load(); }
 
 const juce::String DarkMPEProcessor::getProgramName (int index)
 {
@@ -1201,13 +1248,23 @@ const juce::String DarkMPEProcessor::getProgramName (int index)
 
 void DarkMPEProcessor::setCurrentProgram (int index)
 {
-    // Hosts call this with the current index too (e.g. after restoring a project): only a change applies a preset.
-    if (! juce::isPositiveAndBelow (index, getNumPrograms()) || index == getCurrentProgram())
+    // Hosts call this from any thread, and with the current index too (e.g. after restoring a project): only a
+    // change is recorded, and the preset is applied on the message thread.
+    if (! juce::isPositiveAndBelow (index, getNumPrograms()) || index == currentProgram.load())
+        return;
+    currentProgram.store (index);
+    pendingProgram.store (index);
+    triggerAsyncUpdate();
+}
+
+void DarkMPEProcessor::applyPendingProgram()
+{
+    const int index = pendingProgram.exchange (-1);
+    if (! juce::isPositiveAndBelow (index, getNumPrograms()))
         return;
     presets::apply (apvts, presets::factory()[(size_t) index]);
     apvts.state.setProperty ("program", index, nullptr);
     apvts.state.setProperty ("presetName", getProgramName (index), nullptr);
-    rebuild();
 }
 
 juce::String DarkMPEProcessor::getPresetName() const
@@ -1228,7 +1285,6 @@ bool DarkMPEProcessor::loadUserPreset (const juce::File& file)
     int seed = getSeed(), variation = 0;
     if (! presets::load (apvts, file, seed, variation))
         return false;
-    apvts.state.setProperty ("program", -1, nullptr);
     apvts.state.setProperty ("presetName", file.getFileNameWithoutExtension(), nullptr);
     setSeed (seed, variation); // rebuilds
     return true;

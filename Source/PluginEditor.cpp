@@ -296,6 +296,7 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     updateModeVisibility();
     updateSeedControls();
     startTimerHz (10);
+    proc.allowPorts(); // the user opened the plugin: it is in use
 }
 
 DarkMPEEditor::~DarkMPEEditor()
@@ -365,6 +366,7 @@ void DarkMPEEditor::showPresetMenu()
                          if (result < 1000)
                          {
                              ed.proc.setCurrentProgram (result - 1);
+                             ed.proc.refreshNow(); // apply now: we are on the message thread
                              ed.setStatus ("Preset: " + ed.proc.getPresetName());
                          }
                          else if (result < 5000 && result - 1000 < files.size())

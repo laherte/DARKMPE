@@ -42,7 +42,8 @@ struct Rendered
 
 class DarkMPEProcessor : public juce::AudioProcessor,
                          private juce::AudioProcessorValueTreeState::Listener,
-                         private juce::AsyncUpdater
+                         private juce::AsyncUpdater,
+                         private juce::Timer
 {
 public:
     enum class Mode { generate, transform, cinematic, kit };
@@ -135,7 +136,11 @@ public:
     bool isHostMono() const { return hostMono.load (std::memory_order_relaxed); } // host out is the mono (channel 1) line
     bool isPortOpen() const { return ports.isOpen (0); }
 
-    void refreshNow() { rebuild(); } // synchronous rebuild (tests / immediate UI actions)
+    void refreshNow() { applyPendingProgram(); rebuild(); } // synchronous (message thread: UI actions, tests)
+
+    // The virtual ports open only once the plugin is really in use (editor opened, project loaded, loop played),
+    // never while a host is just scanning or validating it.
+    void allowPorts();
 
     double getPlayheadBeats() const { return playheadBeats.load(); }
     bool isPlayingBack() const { return playingBack.load(); }
@@ -150,7 +155,9 @@ private:
         return t;
     }
     void parameterChanged (const juce::String&, float) override { triggerAsyncUpdate(); }
-    void handleAsyncUpdate() override { rebuild(); }
+    void handleAsyncUpdate() override { applyPendingProgram(); rebuild(); }
+    void timerCallback() override;
+    void applyPendingProgram(); // message thread: a program change requested by the host (from any thread)
     void rebuild();
     void finishCapture();
     juce::ValueTree history();
@@ -184,7 +191,15 @@ private:
     juce::String portName;
     int instanceNumber = 1;
     std::array<bool, PortHub::numPorts> layerPortWanted {}; // a KIT layer's port stays once it was used
-    std::atomic<bool> portAllowed { false }; // only after prepareToPlay: never open ports during plugin scans
+    std::atomic<bool> portAllowed { false }; // see allowPorts(): never during a plugin scan
+    std::atomic<bool> playedOnce { false };  // set by the audio thread the first time the loop plays
+
+    // Programs can be changed by the host from any thread: the request is applied on the message thread.
+    std::atomic<int> currentProgram { 0 }, pendingProgram { -1 };
+
+    // One rebuild at a time, and the loaded source is only touched under this lock (hosts may restore state
+    // from a background thread).
+    juce::CriticalSection rebuildLock;
     std::array<ChannelMonitor, 17> mon;
 
     // ---- shared state

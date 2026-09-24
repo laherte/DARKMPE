@@ -7,6 +7,7 @@
 #include <iostream>
 #include <map>
 #include <set>
+#include <thread>
 
 // ---- heap allocation counter (glibc only): the audio thread must never allocate.
 #if defined(__GLIBC__)
@@ -472,6 +473,45 @@ public:
             expectEquals (labels(), juce::String ("A@0 B@8 A@16 C@24"));
             setParam (proc, "form", 0.0f);
             expectEquals (labels(), juce::String());
+        }
+
+        beginTest ("Programs changed from other threads while playing: no crash, applied on the message thread");
+        {
+            DarkMPEProcessor proc;
+            setParam (proc, "virtualOut", 0.0f);
+            setParam (proc, "preview", 1.0f);
+            proc.refreshNow();
+            proc.prepareToPlay (48000.0, 256);
+
+            std::atomic<bool> stop { false };
+            std::thread host ([&]
+            {
+                juce::Random r (7);
+                while (! stop.load())
+                {
+                    proc.setCurrentProgram (r.nextInt (proc.getNumPrograms()));
+                    expect (juce::isPositiveAndBelow (proc.getCurrentProgram(), proc.getNumPrograms()));
+                }
+            });
+            juce::AudioBuffer<float> audio (2, 256);
+            for (int b = 0; b < 400; ++b)
+            {
+                juce::MidiBuffer midi;
+                proc.processBlock (audio, midi);
+                if (b % 20 == 0)
+                    proc.refreshNow(); // the message thread applies what the host asked for
+            }
+            stop.store (true);
+            host.join();
+            proc.refreshNow();
+            expectEquals (proc.getPresetName(), proc.getProgramName (proc.getCurrentProgram()));
+
+            // Loading a user preset keeps the program index valid (hosts read it at any time).
+            const auto file = juce::File::createTempFile ("dmpreset");
+            expect (proc.saveUserPreset (file));
+            expect (proc.loadUserPreset (file));
+            expect (juce::isPositiveAndBelow (proc.getCurrentProgram(), proc.getNumPrograms()));
+            file.deleteFile();
         }
 
         beginTest ("Seed history and favourites survive the saved state");
