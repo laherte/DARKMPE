@@ -72,6 +72,8 @@ constexpr const char* breath = "breath";
 constexpr const char* pbRange = "pbRange";
 constexpr const char* preview = "preview";
 constexpr const char* virtualOut = "virtualOut";
+constexpr const char* leadMono = "leadMono";
+constexpr const char* monoBend = "monoBend";
 } // namespace ids
 
 static const int barChoices[] = { 1, 2, 4, 8 };
@@ -155,6 +157,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout DarkMPEProcessor::createLayo
     integer (ids::pbRange, "Bend Range", 1, 96, 48);
     boolean (ids::preview, "Preview", false);
     boolean (ids::virtualOut, "Virtual MIDI Out", true);
+    boolean (ids::leadMono, "Mono Lead Out", false);
+    integer (ids::monoBend, "Mono Bend Range", 1, 48, 12);
 
     return l;
 }
@@ -325,7 +329,7 @@ void DarkMPEProcessor::setMode (Mode m)
 }
 
 // ------------------------------------------------------------------ rebuild
-Stream DarkMPEProcessor::makeStream (int layer, Phrase phrase, const ExprParams& expr) const
+Stream DarkMPEProcessor::makeStream (int layer, Phrase phrase, const ExprParams& expr, bool mono) const
 {
     // Keep every note-off strictly inside the loop so wrap-around never leaves hanging notes.
     const double L = phrase.lengthBeats;
@@ -336,11 +340,20 @@ Stream DarkMPEProcessor::makeStream (int layer, Phrase phrase, const ExprParams&
 
     Stream s;
     s.layer = layer;
-    RenderOptions ro;
-    ro.pitchBendRange = pi (ids::pbRange);
-    ro.includeZoneConfig = false; // sent by the audio thread at playback start
-    s.events = toPlayEvents (renderMpe (phrase, ro));
-    s.startup = zoneConfigEvents (ro.pitchBendRange);
+    s.mono = mono;
+    if (mono)
+    {
+        s.events = toPlayEvents (renderMono (phrase, pi (ids::monoBend), false));
+        s.startup = monoSetupEvents (pi (ids::monoBend));
+    }
+    else
+    {
+        RenderOptions ro;
+        ro.pitchBendRange = pi (ids::pbRange);
+        ro.includeZoneConfig = false; // sent by the audio thread at playback start
+        s.events = toPlayEvents (renderMpe (phrase, ro));
+        s.startup = zoneConfigEvents (ro.pitchBendRange);
+    }
     s.phrase = std::move (phrase);
     return s;
 }
@@ -376,7 +389,8 @@ void DarkMPEProcessor::rebuild()
         dmpe::humanize (main, pf (ids::humanize), getSeed());
 
     r->lengthBeats = main.lengthBeats;
-    r->streams.push_back (makeStream (0, std::move (main), readExprParams()));
+    const bool mono = getMode() == Mode::generate && pb (ids::leadMono);
+    r->streams.push_back (makeStream (0, std::move (main), readExprParams(), mono));
 
     {
         const juce::SpinLock::ScopedLockType sl (renderLock);
@@ -607,10 +621,11 @@ juce::File DarkMPEProcessor::writeMidiFile (const juce::File& target) const
     if (r == nullptr)
         return {};
 
+    const auto& stream = r->focused();
     RenderOptions ro;
     ro.pitchBendRange = pi (ids::pbRange);
     ro.includeZoneConfig = true;
-    const auto seq = renderMpe (r->focused().phrase, ro);
+    const auto seq = stream.mono ? renderMono (stream.phrase, pi (ids::monoBend), true) : renderMpe (stream.phrase, ro);
     const auto mf = makeMidiFile (seq, lastBpm.load(), suggestedFileName());
     return dmpe::writeMidiFile (mf, target) ? target : juce::File();
 }
@@ -761,6 +776,7 @@ void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::Midi
             audioRendered = rendered;
             allNotesOff (0); // new phrase: silence what is sounding so nothing hangs
             hostLayer = audioRendered->focused().layer;
+            hostMono.store (audioRendered->focused().mono, std::memory_order_relaxed);
         }
     }
 

@@ -149,6 +149,60 @@ juce::MidiMessageSequence renderMpe (const Phrase& input, const RenderOptions& o
     return seq;
 }
 
+juce::MidiMessageSequence renderMono (const Phrase& input, int range, bool includeSetup)
+{
+    juce::MidiMessageSequence seq;
+    if (includeSetup)
+        for (const auto& e : monoSetupEvents (range))
+            seq.addEvent (juce::MidiMessage (e.data, e.size, 0.0));
+
+    Phrase phrase = input;
+    phrase.sortByStart();
+    const auto& notes = phrase.notes;
+    constexpr int ch = 1;
+    constexpr double eps = 1.0e-6;
+
+    std::vector<std::pair<double, juce::MidiMessage>> events;
+    auto add = [&] (const juce::MidiMessage& m, double t) { events.emplace_back (t, m); };
+
+    for (size_t i = 0; i < notes.size(); ++i)
+    {
+        Note n = notes[i];
+        const bool hasNext = i + 1 < notes.size();
+        if (hasNext && notes[i + 1].start < n.end() - eps)
+            n.length = notes[i + 1].start - n.start; // one line: a note ends where the next begins
+        if (n.length <= eps)
+            continue; // simultaneous notes: the last (highest) one plays
+        const bool legato = hasNext && std::abs (notes[i + 1].start - n.end()) < eps;
+
+        for (auto& pt : n.bend)
+            pt.v = std::clamp (pt.v, (float) -range, (float) range);
+
+        const double s = n.start;
+        add (juce::MidiMessage::pitchWheel (ch, bendToMidi (evalCurve (n.bend, 0.0, 0.0f), range)), s);
+        add (juce::MidiMessage::controllerEvent (ch, 74, to7 (evalCurve (n.slide, 0.0, 0.5f))), s);
+        add (juce::MidiMessage::channelPressureChange (ch, to7 (evalCurve (n.pressure, 0.0, 0.0f))), s);
+        add (juce::MidiMessage::noteOn (ch, n.pitch, (juce::uint8) velTo7 (n.velocity)), s);
+        emitExpression (n, s, n.length, range, ch, add);
+        // Legato: the next note-on comes first, so mono synths glide / don't retrigger.
+        add (juce::MidiMessage::noteOff (ch, n.pitch, (juce::uint8) velTo7 (n.releaseVelocity)), n.end() + (legato ? eps : 0.0));
+    }
+
+    std::stable_sort (events.begin(), events.end(), [] (const auto& a, const auto& b) { return a.first < b.first; });
+    for (const auto& [t, m] : events)
+        seq.addEvent (m, t);
+    seq.updateMatchedPairs();
+    return seq;
+}
+
+std::vector<PlayEvent> monoSetupEvents (int range)
+{
+    juce::MidiMessageSequence seq;
+    for (const auto& [cc, v] : { std::pair { 101, 0 }, { 100, 0 }, { 6, std::clamp (range, 1, 127) }, { 38, 0 }, { 101, 127 }, { 100, 127 } })
+        seq.addEvent (juce::MidiMessage::controllerEvent (1, cc, v), 0.0);
+    return toPlayEvents (seq);
+}
+
 std::vector<PlayEvent> toPlayEvents (const juce::MidiMessageSequence& seq)
 {
     std::vector<PlayEvent> out;

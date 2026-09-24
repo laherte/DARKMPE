@@ -907,6 +907,50 @@ public:
             expectLessOrEqual (std::abs (g.last), 0.03f, "glide must land on the note");
         }
 
+        beginTest ("Mono render: one line on channel 1, legato glides, bends in range");
+        {
+            GenParams gp;
+            gp.slide = 1.0f;
+            gp.gate = 1.0f;
+            gp.bars = 8;
+            Phrase lead = generateMelody (gp);
+            shapeExpression (lead, {});
+            const int range = 12;
+            const auto seq = renderMono (lead, range, true);
+
+            int sounding = 0, notes = 0, legato = 0, bends = 0;
+            bool rpn = false;
+            for (int i = 0; i < seq.getNumEvents(); ++i)
+            {
+                const auto& m = seq.getEventPointer (i)->message;
+                expectEquals (m.getChannel(), 1, "mono output must stay on channel 1");
+                if (m.isController() && m.getControllerNumber() == 6 && m.getControllerValue() == range)
+                    rpn = true;
+                if (m.isNoteOn())
+                {
+                    ++notes;
+                    // A second note may only overlap for the legato instant (its note-on first, same time).
+                    if (sounding == 1)
+                    {
+                        ++legato;
+                        const auto& next = seq.getEventPointer (i + 1)->message;
+                        expect (next.isNoteOff() && next.getTimeStamp() - m.getTimeStamp() < 1.0e-5, "notes overlap");
+                    }
+                    ++sounding;
+                    expectLessOrEqual (sounding, 2);
+                }
+                else if (m.isNoteOff())
+                    --sounding;
+                else if (m.isPitchWheel() && m.getPitchWheelValue() != 8192)
+                    ++bends;
+            }
+            expect (rpn, "pitch-bend range must be set");
+            expectEquals (sounding, 0, "hanging notes");
+            expectGreaterThan (notes, 20);
+            expectGreaterThan (legato, 3, "glides should tie notes legato");
+            expectGreaterThan (bends, 20, "glides should bend");
+        }
+
         beginTest ("Event density stays reasonable");
         {
             Phrase cine = cinematic (demoProgression (9, scales::Scale::naturalMinor, 8), {});

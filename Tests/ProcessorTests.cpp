@@ -216,6 +216,35 @@ public:
             checkMpe (run (proc, blocksFor8Bars, blockSize, clock), "generate", 1);
         }
 
+        beginTest ("Mono lead: channel 1 with its bend range, no MPE zone");
+        {
+            DarkMPEProcessor proc;
+            setParam (proc, "virtualOut", 0.0f);
+            setParam (proc, "mode", 0.0f);
+            setParam (proc, "leadMono", 1.0f);
+            setParam (proc, "monoBend", 24.0f);
+            setParam (proc, "slide", 1.0f);
+            setParam (proc, "preview", 1.0f);
+            proc.refreshNow();
+            proc.prepareToPlay (48000.0, blockSize);
+            long long clock = 0;
+            const auto events = run (proc, blocksFor8Bars, blockSize, clock);
+            int notes = 0, bends = 0;
+            bool range = false;
+            for (const auto& e : events)
+            {
+                expect (! (e.msg.isController() && e.msg.getControllerNumber() == 100 && e.msg.getControllerValue() == 6),
+                        "mono output must not send the MPE zone message (MCM)");
+                if (e.msg.isNoteOn()) { ++notes; expectEquals (e.msg.getChannel(), 1); }
+                if (e.msg.isPitchWheel() && e.msg.getPitchWheelValue() != 8192) ++bends;
+                if (e.msg.isController() && e.msg.getControllerNumber() == 6 && e.msg.getControllerValue() == 24) range = true;
+            }
+            expectGreaterThan (notes, 10);
+            expectGreaterThan (bends, 10);
+            expect (range, "mono bend range (RPN 0) not sent");
+            expect (proc.isHostMono());
+        }
+
         beginTest ("Seed history and favourites survive the saved state");
         {
             auto notesOf = [] (DarkMPEProcessor& p)

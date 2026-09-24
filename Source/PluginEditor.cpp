@@ -237,7 +237,9 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
         knob (exprControls, id, label);
 
     toggle (outControls, "virtualOut", "Port Out");
-    knob (outControls, "pbRange", "Bend Range");
+    toggle (outControls, "leadMono", "Mono Lead");
+    knob (outControls, "pbRange", "MPE Bend");
+    knob (outControls, "monoBend", "Mono Bend");
 
     for (auto* list : { &genControls, &voiceControls, &cineControls, &exprControls, &outControls })
         for (auto& c : *list)

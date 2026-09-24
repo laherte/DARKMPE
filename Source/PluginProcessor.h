@@ -118,6 +118,7 @@ public:
     const ChannelMonitor& monitor (int channel) const { return mon[(size_t) juce::jlimit (1, 16, channel)]; }
 
     juce::String getPortName() const { return portName; }
+    bool isHostMono() const { return hostMono.load (std::memory_order_relaxed); } // host out is the mono (channel 1) line
     bool isPortOpen() const { return ports.isOpen (0); }
 
     void refreshNow() { rebuild(); } // synchronous rebuild (tests / immediate UI actions)
@@ -144,7 +145,7 @@ private:
     int pi (const char* id) const;
     bool pb (const char* id) const;
 
-    Stream makeStream (int layer, dmpe::Phrase phrase, const dmpe::ExprParams& expr) const;
+    Stream makeStream (int layer, dmpe::Phrase phrase, const dmpe::ExprParams& expr, bool mono) const;
 
     // ---- audio thread
     using NoteTable = std::array<std::array<bool, 128>, 17>;
@@ -191,6 +192,7 @@ private:
     bool wasPlaying = false;
     std::atomic<double> playheadBeats { 0.0 };
     std::atomic<bool> playingBack { false };
+    std::atomic<bool> hostMono { false };
     std::atomic<double> lastBpm { 120.0 };
 
     // ---- capture (audio thread writes, message thread reads after stop)

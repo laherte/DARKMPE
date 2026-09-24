@@ -20,6 +20,12 @@ juce::MidiMessageSequence renderMpe (const Phrase& phrase, const RenderOptions& 
 
 int bendToMidi (float semitones, int range);
 
+// Renders a single line on MIDI channel 1 with channel pitch bend (for synths without MPE, and for DAWs that
+// import .mid files without MPE: the glides survive as the clip's pitch-bend envelope). Overlapping notes are
+// cut where the next one starts; a glide ties legato into the next note (note-on before the note-off).
+// Bends beyond the range are clamped. `includeSetup` adds the pitch-bend range (RPN 0) at t = 0.
+juce::MidiMessageSequence renderMono (const Phrase& phrase, int pitchBendRange, bool includeSetup);
+
 // A short MIDI message at a beat position: what the audio thread plays (no allocation, binary-searchable).
 struct PlayEvent
 {
@@ -33,5 +39,8 @@ std::vector<PlayEvent> toPlayEvents (const juce::MidiMessageSequence& seq);
 
 // MPE lower-zone configuration (MCM + member pitch-bend range), sent when playback starts.
 std::vector<PlayEvent> zoneConfigEvents (int pitchBendRange, int memberChannels = 15);
+
+// Pitch-bend range (RPN 0) on channel 1, for the mono output.
+std::vector<PlayEvent> monoSetupEvents (int pitchBendRange);
 
 } // namespace dmpe
