@@ -912,6 +912,151 @@ public:
 
 static KitTests kitTests;
 
+class FormTests : public juce::UnitTest
+{
+public:
+    FormTests() : juce::UnitTest ("DarkMPE phrase forms") {}
+
+    // Notes of one bar as (position in the bar, pitch).
+    static std::vector<std::pair<long, int>> bar (const Phrase& p, int b)
+    {
+        std::vector<std::pair<long, int>> v;
+        for (const auto& n : p.notes)
+            if (n.start >= b * 4.0 - 1.0e-9 && n.start < b * 4.0 + 4.0 - 1.0e-9)
+                v.push_back ({ std::lround ((n.start - b * 4.0) * 1000.0), n.pitch });
+        return v;
+    }
+    static std::vector<long> rhythm (const Phrase& p, int b)
+    {
+        std::vector<long> v;
+        for (auto [t, pitch] : bar (p, b))
+            v.push_back (t);
+        return v;
+    }
+
+    void runTest() override
+    {
+        beginTest ("Sections of each form");
+        {
+            auto labels = [] (Form f, int n) { juce::String s; for (const auto& sec : formSections (f, n)) s << sec.label << " "; return s.trim(); };
+            expectEquals (labels (Form::abac, 4), juce::String ("A B A C"));
+            expectEquals (labels (Form::abac, 8), juce::String ("A B A C A B A C"));
+            expectEquals (labels (Form::period, 4), juce::String ("A B A B'"));
+            expectEquals (labels (Form::sentence, 4), juce::String ("A A' F C"));
+            expectEquals (labels (Form::sequence, 4), juce::String ("A A+ A++ C"));
+            expectEquals (labels (Form::callResponse, 2), juce::String ("A B"));
+            expect (formSections (Form::classic, 4).empty());
+        }
+
+        beginTest ("A B A C: A comes back note for note, B answers, C closes on the root");
+        {
+            GenParams gp;
+            gp.style = Style::opr; // i - bII - i - bII: bars 1 and 3 share the chord
+            gp.form = Form::abac;
+            gp.bars = 4;
+            gp.chroma = 0.4f;
+            gp.seed = 99;
+            const auto mel = generateMelody (gp);
+            expect (bar (mel, 0) == bar (mel, 2), "A must repeat exactly (chromatic notes included)");
+            expect (bar (mel, 1) != bar (mel, 3), "B and C must differ");
+            expect (rhythm (mel, 0).front() == rhythm (mel, 1).front(), "the answer starts like the call");
+
+            const auto& prog = styleProgression (gp.style);
+            const int chordRoot = scales::mod (scales::degreeToPitch (gp.key, gp.scale, prog[3]), 12);
+            const auto& last = mel.notes.back();
+            expectEquals (scales::mod (last.pitch, 12), chordRoot, "C must end on the chord root");
+            expect (last.end() > 15.9 - 1.0e-6 || mel.lengthBeats - last.end() < 0.05, "the closing note is held");
+            expect (isMonophonic (mel));
+
+            // MUTATE re-draws the answers, never A.
+            auto mutated = gp;
+            mutated.variation = 1;
+            const auto m2 = generateMelody (mutated);
+            expect (bar (m2, 0) == bar (mel, 0), "MUTATE must keep A");
+        }
+
+        beginTest ("A A A B and Sequence keep the rhythm of A");
+        {
+            GenParams gp;
+            gp.form = Form::aaab;
+            gp.chroma = 0.0f;
+            const auto aaab = generateMelody (gp);
+            expect (rhythm (aaab, 0) == rhythm (aaab, 1) && rhythm (aaab, 1) == rhythm (aaab, 2), "A A A: same rhythm");
+
+            gp.form = Form::sequence;
+            gp.style = Style::opr;
+            const auto seq = generateMelody (gp);
+            expect (rhythm (seq, 0) == rhythm (seq, 2), "A++ keeps the rhythm of A");
+            expect (bar (seq, 0) != bar (seq, 2), "A++ moves the idea up");
+        }
+
+        beginTest ("Every form x style: in scale, one line, deterministic");
+        for (int f = 0; f < (int) Form::count; ++f)
+            for (int st = 0; st < (int) Style::count; ++st)
+            {
+                GenParams gp;
+                gp.form = (Form) f;
+                gp.style = (Style) st;
+                gp.bars = 8;
+                gp.seed = 5 + f * 17 + st;
+                const auto a = generateMelody (gp), b = generateMelody (gp);
+                const juce::String what = juce::String (formNames[f]) + " / " + styleNames[st];
+                expect (! a.empty(), what);
+                expect (bar (a, 3) == bar (b, 3), what + " not deterministic");
+                for (const auto& n : a.notes)
+                {
+                    expect (n.chromatic || scales::inScale (n.pitch, gp.key, gp.scale), what + " out of scale");
+                    expect (n.start >= 0.0 && n.end() <= a.lengthBeats + 1.0e-6, what + " note outside the loop");
+                }
+                expect (isMonophonic (a), what + " must stay one line");
+            }
+
+        beginTest ("Forms shape cinematic progressions");
+        {
+            HarmonyParams hp;
+            hp.progression = Progression::epicMinor;
+            hp.form = Form::abac;
+            SectionMarks marks;
+            const auto abac = generateProgression (hp, &marks);
+            juce::String chords;
+            for (const auto& r : abac) chords << chordSymbol (r) << " ";
+            expectEquals (chords.trim(), juce::String ("Am F Am E7"));
+            expectEquals ((int) marks.size(), 4);
+
+            hp.form = Form::sequence;
+            hp.bars = 8;
+            chords = {};
+            for (const auto& r : generateProgression (hp)) chords << chordSymbol (r) << " ";
+            expectEquals (chords.trim(), juce::String ("Am F Bm G Cm G# Dm E7"));
+
+            for (int f = 0; f < (int) Form::count; ++f)
+                for (int prog = 0; prog < (int) Progression::count; ++prog)
+                {
+                    hp.form = (Form) f;
+                    hp.progression = (Progression) prog;
+                    hp.bars = 8;
+                    auto out = cinematicRegions (generateProgression (hp), 32.0, {}, hp.key);
+                    shapeExpression (out, {});
+                    juce::String why;
+                    expect (channelsAreExclusive (renderMpe (out), why), juce::String (formNames[f]) + " / " + progressionNames[prog] + ": " + why);
+                }
+        }
+
+        beginTest ("KIT layers follow the form");
+        {
+            KitParams kp;
+            kp.gen.form = Form::abac;
+            kp.gen.style = Style::opr;
+            const auto parts = generateKit (kp);
+            for (const auto& part : parts)
+                if (part.layer == Layer::arp || part.layer == Layer::bass || part.layer == Layer::lead)
+                    expect (bar (part.phrase, 0) == bar (part.phrase, 2), juce::String (layerNames[(int) part.layer]) + ": A bars must repeat");
+        }
+    }
+};
+
+static FormTests formTests;
+
 // Pitch-bend steps of the note `pitch` between its note-on and `window` beats later (semitones, range 48).
 struct GlideStats { int bends = 0; float maxStep = 0.0f; float last = 0.0f; };
 GlideStats glideStats (const juce::MidiMessageSequence& seq, int pitch, double window)
@@ -1096,6 +1241,32 @@ static int renderExamples (const juce::File& inDir, const juce::File& outDir)
         write (renderMono (lead, 12, true), juce::String ("Lead - ") + styleNames[s] + " (Mono, bend 12)", lead.notes.size());
     }
 
+    // Phrase forms: the same seed as classic, as A B A C / period / sentence / sequence (8 bars).
+    for (auto form : { Form::abac, Form::period, Form::sentence, Form::sequence, Form::aaab })
+    {
+        GenParams gp;
+        gp.style = Style::pursuit;
+        gp.seed = 666;
+        gp.bars = 8;
+        gp.form = form;
+        save (generateMelody (gp), juce::String ("Form - Lead Pursuit - ") + formNames[(int) form]);
+
+        HarmonyParams hp;
+        hp.bars = 8;
+        hp.form = form;
+        CineParams cp;
+        cp.reharm = Reharm::suspensions;
+        cp.tension = 0.3f;
+        cp.sub = true;
+        std::vector<Region> used;
+        auto phrase = cinematicRegions (generateProgression (hp), 32.0, cp, hp.key, &used);
+        juce::String chords;
+        for (const auto& r : used)
+            chords << " " << chordSymbol (r);
+        std::cout << "  " << formNames[(int) form] << ":" << chords << std::endl;
+        save (phrase, juce::String ("Form - Cinematic Epic Minor - ") + formNames[(int) form]);
+    }
+
     struct Showcase { const char* name; Progression prog; Motion motion; Reharm reharm; VoicingMode voicing; GlideShape shape;
                       float tension, darkness, fall; bool sub; ChordLength len; };
     const Showcase shows[] = {
@@ -1219,7 +1390,7 @@ int main (int argc, char** argv)
 
     juce::UnitTestRunner runner;
     runner.setAssertOnFailure (false);
-    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &harmonyTests, &kitTests, &renderTests });
+    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &harmonyTests, &kitTests, &formTests, &renderTests });
 
     int failures = 0;
     for (int i = 0; i < runner.getNumResults(); ++i)

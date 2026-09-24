@@ -10,7 +10,7 @@ ctest --test-dir build        # test del motore e del processor (MPE valido, zer
 ```
 Per copiare i plugin in `~/Library/Audio/Plug-Ins` dopo la build aggiungi `-DDARKMPE_INSTALL=ON` alla configurazione, oppure copia a mano da `build/DarkMPE_artefacts/Release/{VST3,AU}`.
 
-Demo pronte all'uso: ogni stile di lead (MPE e Mono), 10 vetrine CINEMATIC, un KIT completo (un file per layer), e ogni voicing e versione cinematica dei `.mid` in `Examples/`:
+Demo pronte all'uso: ogni stile di lead (MPE e Mono), le Phrase Form (lead e armonia), 10 vetrine CINEMATIC, un KIT completo (un file per layer), e ogni voicing e versione cinematica dei `.mid` in `Examples/`:
 ```bash
 ./build/DarkMPETests_artefacts/Release/DarkMPETests --render Examples "Examples/MPE Output"
 ```
@@ -22,6 +22,32 @@ Ogni modifica rigenera con lo stesso seed.
 - **◀ ▶** tornano ai seed precedenti (ultimi 32, salvati nel progetto).
 - **★** segna un seed tra i preferiti.
 - Cliccando **#seed** si apre il menu dei preferiti, oppure puoi scrivere un seed.
+
+### PHRASE FORM (in ogni modalità)
+Il selettore **PHRASE FORM** in alto decide la struttura della frase. *Classic* è la generazione di sempre; le altre forme sono strutture di call and response prese dal songwriting e dalla teoria della frase:
+
+| Form | Struttura |
+|---|---|
+| Call & Response | A B: domanda e risposta aperta |
+| A B A C | domanda, risposta aperta, di nuovo la domanda, risposta che chiude |
+| A A B A | esposizione, ripetizione, contrasto, ritorno |
+| A A A B | tre volte l'idea, poi la svolta |
+| Period A B A B' | antecedente e conseguente: la seconda risposta chiude sulla tonica |
+| Sentence A A' F C | idea, idea ripresa una terza sopra, frammentazione, cadenza |
+| Sequence A A+ A++ C | l'idea sale di un grado alla volta, poi chiude |
+
+Come funziona:
+- La stessa lettera suona uguale, nota per nota se l'accordo è lo stesso. **MUTATE** cambia le risposte e non tocca mai A.
+- **B** tiene il ritmo e l'inizio di A, specchia il profilo e finisce aperta, sulla quinta.
+- **C** riprende l'inizio di A, poi scende per grado alla fondamentale e la tiene.
+- **F** ripete la testa di A, un grado più su.
+
+Dove si applica:
+- **GENERATE**: il lead.
+- **KIT**: il lead, l'arpeggio (le risposte girano al contrario, la chiusura scende a casa) e il basso (ottava sulla risposta, fill sulla cadenza).
+- **CINEMATIC**: la progressione viene divisa in quattro gruppi di accordi. C diventa una cadenza iv–V7, A+ e A++ salgono di un grado alla volta (in La minore: Am → Bm → Cm). Per esempio A B A C su 8 battute: `Am F | C G | Am F | Dm E7`.
+
+Le lettere delle sezioni compaiono sul piano roll.
 
 ### GENERATE (lead)
 Scegli Style, Key, Scale e Bars.
@@ -123,7 +149,7 @@ Sei layer costruiti su Key, Scale, progressione (quella dello Style) e seed comu
   - *Gate*: il loop suona solo finché tieni premuto un tasto e riparte dall'inizio nel momento esatto in cui lo premi, anche a transport fermo.
 
 ## Preset
-**PRESET ▾** contiene 23 preset di fabbrica (Lead, Cinematic, Kit, Transform), che sono anche i Program dell'host.
+**PRESET ▾** contiene 30 preset di fabbrica (Lead, Cinematic, Kit, Transform; alcuni usano le Phrase Form, come *ABAC Anthem*, *Rising Sequence*, *ABAC Track*), che sono anche i Program dell'host.
 - I preset utente si salvano con *Save preset…* in `~/Music/DarkMPE/Presets` (file `.dmpreset`, parametri + seed).
 - Un preset non tocca mai le impostazioni di uscita: porte, bend range, Key Trigger e Mono Lead.
 
@@ -161,7 +187,8 @@ Per controllare l'interfaccia senza aprire una DAW (su Linux: `xvfb-run -s "-scr
 ```
 
 ## Struttura
-- `Source/engine/HarmonyEngine`: progressioni, colori (Tension/Darkness), nomi degli accordi.
+- `Source/engine/PhraseForm`: le forme di frase (call and response) e le loro sezioni.
+- `Source/engine/HarmonyEngine`: progressioni (anche divise per forma), colori (Tension/Darkness), nomi degli accordi.
 - `Source/engine/CinematicEngine`: regioni di accordi, reharm, voicing a slot, movimenti (Morph, Bloom, Collapse, Breathe, Deep Note, Pulse, Tension Rise), sospensioni, fall, arc.
 - `Source/engine/KitGenerator`: i sei layer del KIT.
 - `Source/engine/MelodyGenerator`: ritmo euclideo o fisso, motivo, pedale, ottave, cromatismi e slide.

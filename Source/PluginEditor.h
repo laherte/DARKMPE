@@ -119,6 +119,7 @@ private:
     juce::TextButton scaleBtn { "100%" };
     juce::TextButton prevBtn, nextBtn, seedBtn, favBtn; // seed history and favourites
     juce::TextButton presetBtn;
+    Choice formChoice; // phrase form, for every mode
     Toggle previewToggle;
     DragOut dragOut { *this };
     juce::Label status;

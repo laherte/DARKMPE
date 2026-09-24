@@ -35,6 +35,7 @@ struct Rendered
     std::vector<Stream> streams;
     int focus = 0;           // index into streams: drawn in the UI, sent to the host MIDI out
     double lengthBeats = 4.0;
+    std::vector<std::pair<double, juce::String>> sections; // phrase form: where A, B, C... start (beats)
 
     const Stream& focused() const { return streams[(size_t) focus]; }
 };

@@ -450,6 +450,30 @@ public:
             file.deleteFile();
         }
 
+        beginTest ("Form: section letters for the roll, in every generating mode");
+        {
+            DarkMPEProcessor proc;
+            setParam (proc, "virtualOut", 0.0f);
+            setParam (proc, "form", 2.0f); // A B A C
+            auto labels = [&]
+            {
+                proc.refreshNow();
+                juce::String s;
+                for (const auto& [beat, label] : proc.getRendered()->sections)
+                    s << label << "@" << juce::String (beat, 0) << " ";
+                return s.trim();
+            };
+            setParam (proc, "mode", 0.0f);
+            expectEquals (labels(), juce::String ("A@0 B@4 A@8 C@12"));
+            setParam (proc, "mode", 3.0f);
+            expectEquals (labels(), juce::String ("A@0 B@4 A@8 C@12"));
+            setParam (proc, "mode", 2.0f);
+            setParam (proc, "bars", 3.0f); // 8 bars of 1-bar chords: two chords per section
+            expectEquals (labels(), juce::String ("A@0 B@8 A@16 C@24"));
+            setParam (proc, "form", 0.0f);
+            expectEquals (labels(), juce::String());
+        }
+
         beginTest ("Seed history and favourites survive the saved state");
         {
             auto notesOf = [] (DarkMPEProcessor& p)
@@ -539,6 +563,7 @@ static int snapshots (const juce::File& dir)
             setParam (proc, "mode", (float) mode);
             setParam (proc, "kSiren", 1.0f);
             setParam (proc, "kFocus", 1.0f);
+            setParam (proc, "form", mode == 1 ? 0.0f : 2.0f); // A B A C
             setParam (proc, "preview", 1.0f);
             proc.refreshNow();
             proc.prepareToPlay (48000.0, 512);

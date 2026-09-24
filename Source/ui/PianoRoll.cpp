@@ -211,6 +211,20 @@ void PianoRoll::drawStatic (juce::Graphics& g)
         lane (n.pressure, pressureLane, pressureCol());
     }
 
+    // phrase form: A / B / C... at the start of each section
+    for (const auto& [beat, label] : shown->sections)
+    {
+        const float x = xOf (beat, roll);
+        g.setColour (chrome().withAlpha (0.35f));
+        g.drawVerticalLine ((int) x, roll.getY(), roll.getBottom());
+        const auto tag = juce::Rectangle<float> (x + 3.0f, roll.getY() + 3.0f, 30.0f, 15.0f);
+        g.setColour (bg().withAlpha (0.85f));
+        g.fillRoundedRectangle (tag, 3.0f);
+        g.setColour (chrome());
+        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        g.drawText (label, tag, juce::Justification::centred);
+    }
+
     g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
     g.setColour (slideCol());
     g.drawText ("SLIDE / CC74", slideLane.reduced (4, 2), juce::Justification::topLeft);

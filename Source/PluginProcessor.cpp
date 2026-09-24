@@ -28,6 +28,7 @@ constexpr const char* swing = "swing";
 constexpr const char* baseOct = "baseOct";
 constexpr const char* range = "range";
 constexpr const char* humanize = "humanize";
+constexpr const char* form = "form";
 // voicing
 constexpr const char* vMode = "vMode";
 constexpr const char* voices = "voices";
@@ -121,6 +122,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout DarkMPEProcessor::createLayo
     integer (ids::baseOct, "Octave Base", 1, 5, 3);
     integer (ids::range, "Range", 1, 3, 2);
     flt (ids::humanize, "Humanize", 0.0f, 1.0f, 0.0f);
+    choice (ids::form, "Form", names (formNames, (int) Form::count), 0);
 
     choice (ids::vMode, "Voicing", names (voicingNames, (int) VoicingMode::count), 2);
     integer (ids::voices, "Voices", 1, 6, 4);
@@ -298,6 +300,7 @@ GenParams DarkMPEProcessor::readGenParams() const
     g.rangeOctaves = pi (ids::range);
     g.seed = (int) apvts.state.getProperty ("seed", 1);
     g.variation = (int) apvts.state.getProperty ("variation", 0);
+    g.form = (Form) pi (ids::form);
     return g;
 }
 
@@ -389,6 +392,7 @@ HarmonyParams DarkMPEProcessor::readHarmonyParams() const
     h.chordLength = (ChordLength) pi (ids::cChordLen);
     h.bars = barChoices[std::clamp (pi (ids::bars), 0, 3)];
     h.darkness = pf (ids::cDark);
+    h.form = (Form) pi (ids::form);
     h.seed = (int) apvts.state.getProperty ("seed", 1);
     return h;
 }
@@ -481,7 +485,10 @@ void DarkMPEProcessor::rebuild()
         if (source.empty())
         {
             const auto hp = readHarmonyParams();
-            main = cinematicRegions (generateProgression (hp), hp.bars * 4.0, readCineParams(), hp.key, &used);
+            SectionMarks marks;
+            main = cinematicRegions (generateProgression (hp, &marks), hp.bars * 4.0, readCineParams(), hp.key, &used);
+            for (const auto& [beat, label] : marks)
+                r->sections.push_back ({ beat, juce::String (label) });
         }
         else
             main = cinematic (source, readCineParams(), &used);
@@ -493,6 +500,16 @@ void DarkMPEProcessor::rebuild()
         main = applyVoicing (source, readVoicingParams());
     else
         main = generateMelody (readGenParams());
+
+    // Melodic forms: one section per bar (the lead, and the kit layers that follow it).
+    const bool melodic = getMode() == Mode::kit || getMode() == Mode::generate || (getMode() == Mode::transform && source.empty());
+    if (melodic)
+    {
+        const int bars = barChoices[std::clamp (pi (ids::bars), 0, 3)];
+        const auto secs = formSections ((Form) pi (ids::form), bars);
+        for (size_t i = 0; i < secs.size(); ++i)
+            r->sections.push_back ({ (double) i * 4.0, juce::String (secs[i].label) });
+    }
 
     if (getMode() != Mode::kit)
     {

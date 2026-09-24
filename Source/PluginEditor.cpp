@@ -104,6 +104,7 @@ void DarkMPEEditor::DragOut::mouseDrag (const juce::MouseEvent& e)
 DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     : AudioProcessorEditor (&p), proc (p),
       previewToggle (p.apvts, "preview", "Preview"),
+      formChoice (p.apvts, "form", "Phrase Form"),
       roll (p),
       monitor (p)
 {
@@ -191,6 +192,8 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     for (auto* b : { &newBtn, &mutateBtn, &loadBtn, &captureBtn, &exportBtn, &scaleBtn, &prevBtn, &nextBtn, &seedBtn, &favBtn, &presetBtn })
         content.addAndMakeVisible (*b);
     content.addAndMakeVisible (previewToggle);
+    content.addAndMakeVisible (formChoice);
+    formChoice.box.setTooltip ("Classic, or call & response: A B A C, A A B A, A A A B, period, sentence, sequence");
     content.addAndMakeVisible (dragOut);
 
     status.setFont (juce::FontOptions (11.5f));
@@ -573,12 +576,14 @@ void DarkMPEEditor::layoutContent()
         b->setBounds (header.removeFromLeft (100).reduced (2, 4));
     kitTab.setBounds (header.removeFromLeft (64).reduced (2, 4));
     header.removeFromLeft (14);
-    presetBtn.setBounds (header.removeFromLeft (250).reduced (2, 6));
+    presetBtn.setBounds (header.removeFromLeft (160).reduced (2, 6));
+    header.removeFromLeft (6);
+    formChoice.setBounds (header.removeFromLeft (170).withTrimmedTop (-2));
     scaleBtn.setBounds (header.removeFromRight (58).reduced (2, 6));
     header.removeFromRight (12);
     favBtn.setBounds (header.removeFromRight (34).reduced (2, 6));
     nextBtn.setBounds (header.removeFromRight (34).reduced (2, 6));
-    seedBtn.setBounds (header.removeFromRight (104).reduced (2, 6));
+    seedBtn.setBounds (header.removeFromRight (92).reduced (2, 6));
     prevBtn.setBounds (header.removeFromRight (34).reduced (2, 6));
 
     // ---- toolbar: actions, status, playback / export

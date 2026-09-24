@@ -1,6 +1,7 @@
 #pragma once
 
 #include "model/Phrase.h"
+#include "engine/PhraseForm.h"
 #include "engine/Scales.h"
 
 namespace dmpe
@@ -37,6 +38,7 @@ struct GenParams
     int rangeOctaves = 2;
     int seed = 1;
     int variation = 0;     // bumps the later-bar mutations without touching the core motif
+    Form form = Form::classic; // phrase structure: one section per bar (A stays identical, MUTATE varies the answers)
 };
 
 // Scale-degree roots of a style's chord progression, one per bar (degrees written for 7-note scales).

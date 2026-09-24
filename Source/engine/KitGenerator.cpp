@@ -31,6 +31,16 @@ Rng layerRng (const GenParams& g, Layer l)
     return Rng ((uint64_t) g.seed * 2246822519ull + (uint64_t) l * 3266489917ull + (uint64_t) g.variation * 668265263ull + 1ull);
 }
 
+// With a phrase form, the same section label gives the same random choices (A bars repeat exactly).
+Rng sectionRng (const GenParams& g, Layer l, const std::string& label, int bar, bool form)
+{
+    uint64_t h = 1469598103934665603ull;
+    for (char c : label)
+        h = (h ^ (uint64_t) (unsigned char) c) * 1099511628211ull;
+    const uint64_t salt = form ? h : (uint64_t) bar * 40503ull;
+    return Rng ((uint64_t) g.seed * 2246822519ull + (uint64_t) l * 3266489917ull + (uint64_t) g.variation * 668265263ull + salt);
+}
+
 std::vector<bool> euclid (int pulses, int steps, int rotation)
 {
     std::vector<bool> out ((size_t) steps, false);
@@ -67,15 +77,19 @@ Phrase bassLine (const GenParams& g, const LayerParams& lp)
 {
     Phrase out;
     out.lengthBeats = barsOf (g) * 4.0;
-    Rng rng = layerRng (g, Layer::bass);
+    Rng layerWide = layerRng (g, Layer::bass);
     const int tonic = g.key + 12 * (2 + std::clamp (lp.octave, -1, 2)); // A1 for A
     const float d = lp.density;
+    const auto sections = formSections (g.form, barsOf (g));
 
     for (int bar = 0; bar < barsOf (g); ++bar)
     {
         const double b0 = bar * 4.0;
         const int r = rootDegree (g, bar);
         const int root = pitchOf (g, tonic, r);
+        Rng barRng = sectionRng (g, Layer::bass, sections.empty() ? std::string() : sections[(size_t) bar].label, bar, ! sections.empty());
+        Rng& rng = sections.empty() ? layerWide : barRng;
+        const size_t firstOfBar = out.notes.size();
 
         switch ((BassPattern) lp.pattern)
         {
@@ -113,6 +127,28 @@ Phrase bassLine (const GenParams& g, const LayerParams& lp)
                 break;
             }
         }
+
+        if (! sections.empty())
+        {
+            const auto kind = sections[(size_t) bar].kind;
+            auto lastBeat = [&] { out.notes.erase (std::remove_if (out.notes.begin() + (long) firstOfBar, out.notes.end(),
+                                                                   [b0] (const Note& n) { return n.start >= b0 + 3.0; }), out.notes.end()); };
+            if (kind == SectionKind::close)
+            {
+                // Cadence fill: the last beat walks up root, third, fifth, octave into the next bar.
+                lastBeat();
+                static const int walk[] = { 0, 2, 4, 7 };
+                for (int k = 0; k < 4; ++k)
+                    out.notes.push_back (makeNote (b0 + 3.0 + k * 0.25, 0.2, pitchOf (g, tonic, r + walk[k]), 0.8f));
+            }
+            else if (kind == SectionKind::answer || kind == SectionKind::closedAnswer)
+            {
+                // The answer lifts: the last 8th jumps an octave.
+                out.notes.erase (std::remove_if (out.notes.begin() + (long) firstOfBar, out.notes.end(),
+                                                 [b0] (const Note& n) { return n.start >= b0 + 3.5; }), out.notes.end());
+                out.notes.push_back (makeNote (b0 + 3.5, 0.36, root + 12, 0.84f));
+            }
+        }
     }
 
     // Slide from the last note of a bar into the next bar.
@@ -121,7 +157,7 @@ Phrase bassLine (const GenParams& g, const LayerParams& lp)
     for (size_t i = 0; i + 1 < n.size(); ++i)
     {
         const bool lastOfBar = (int) (n[i].start / 4.0) != (int) (n[i + 1].start / 4.0);
-        if (lastOfBar && n[i].pitch != n[i + 1].pitch && rng.chance (g.slide))
+        if (lastOfBar && n[i].pitch != n[i + 1].pitch && layerWide.chance (g.slide))
         {
             n[i].length = n[i + 1].start - n[i].start;
             n[i + 1].glideFrom = n[i].pitch;
@@ -140,6 +176,7 @@ Phrase arpLine (const GenParams& g, const LayerParams& lp)
     const int tonic = g.key + 12 * (4 + std::clamp (lp.octave, -2, 2)); // A3 for A
     const auto pattern = euclid (std::clamp ((int) std::lround (6.0f + 10.0f * lp.density), 4, 16), 16, 0);
 
+    const auto sections = formSections (g.form, barsOf (g));
     int index = 0, previous = -1;
     for (int bar = 0; bar < barsOf (g); ++bar)
     {
@@ -151,6 +188,16 @@ Phrase arpLine (const GenParams& g, const LayerParams& lp)
         tones.push_back (pitchOf (g, tonic, r + 14));
         const int n = (int) tones.size();
 
+        // With a form every bar restarts: A bars repeat exactly, answers turn round, the close descends home.
+        const Section* sec = sections.empty() ? nullptr : &sections[(size_t) bar];
+        Rng barRng = sectionRng (g, Layer::arp, sec != nullptr ? sec->label : std::string(), bar, sec != nullptr);
+        if (sec != nullptr)
+        {
+            index = 0;
+            previous = -1;
+        }
+
+        std::vector<std::pair<int, int>> hits; // step, tone index
         for (int s = 0; s < 16; ++s)
         {
             if (! pattern[(size_t) s] && s != 0)
@@ -163,12 +210,52 @@ Phrase arpLine (const GenParams& g, const LayerParams& lp)
                 case ArpPattern::upDown: { const int cycle = 2 * n - 2; const int x = index % cycle; k = x < n ? x : cycle - x; break; }
                 case ArpPattern::random:
                 case ArpPattern::count:
-                    do { k = rng.range (0, n - 1); } while (k == previous && n > 1);
+                {
+                    Rng& pick = sec != nullptr ? barRng : rng;
+                    do { k = pick.range (0, n - 1); } while (k == previous && n > 1);
                     break;
+                }
             }
             previous = k;
             ++index;
-            out.notes.push_back (makeNote (bar * 4.0 + s * 0.25, 0.14, tones[(size_t) k], s % 4 == 0 ? 0.84f : 0.7f));
+            hits.push_back ({ s, k });
+        }
+
+        bool holdLast = false;
+        if (sec != nullptr)
+        {
+            switch (sec->kind)
+            {
+                case SectionKind::statement:
+                    for (auto& h : hits) h.second = std::min (n - 1, h.second + sec->shift);
+                    break;
+                case SectionKind::answer:
+                case SectionKind::closedAnswer:
+                    for (auto& h : hits) h.second = n - 1 - h.second;
+                    if (! hits.empty() && sec->kind == SectionKind::closedAnswer) hits.back().second = 0;
+                    break;
+                case SectionKind::close:
+                    for (size_t i = 0; i < hits.size(); ++i)
+                        hits[i].second = std::max (0, (int) (hits.size() - 1 - i) % n);
+                    holdLast = true;
+                    break;
+                case SectionKind::fragment:
+                {
+                    std::vector<std::pair<int, int>> head;
+                    for (const auto& h : hits) if (h.first < 8) head.push_back (h);
+                    hits = head;
+                    for (const auto& h : head) hits.push_back ({ h.first + 8, std::min (n - 1, h.second + 1) });
+                    break;
+                }
+            }
+        }
+
+        for (size_t i = 0; i < hits.size(); ++i)
+        {
+            const int s = hits[i].first;
+            const bool last = i + 1 == hits.size();
+            out.notes.push_back (makeNote (bar * 4.0 + s * 0.25, holdLast && last ? 4.0 - s * 0.25 - 0.02 : 0.14,
+                                           tones[(size_t) hits[i].second], s % 4 == 0 ? 0.84f : 0.7f));
         }
     }
     clip (out);
