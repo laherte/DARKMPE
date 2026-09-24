@@ -3,6 +3,7 @@
 
 #include "engine/MidiFileIO.h"
 #include "engine/Humanize.h"
+#include "presets/Presets.h"
 #include "engine/MpeRenderer.h"
 
 #include <cmath>
@@ -1168,6 +1169,52 @@ void DarkMPEProcessor::setStateInformation (const void* data, int sizeInBytes)
 
     apvts.replaceState (state);
     rebuild();
+}
+
+// ------------------------------------------------------------------ presets
+int DarkMPEProcessor::getNumPrograms() { return (int) presets::factory().size(); }
+
+int DarkMPEProcessor::getCurrentProgram() { return (int) apvts.state.getProperty ("program", 0); }
+
+const juce::String DarkMPEProcessor::getProgramName (int index)
+{
+    const auto& f = presets::factory();
+    return juce::isPositiveAndBelow (index, (int) f.size()) ? juce::String (f[(size_t) index].name) : juce::String();
+}
+
+void DarkMPEProcessor::setCurrentProgram (int index)
+{
+    // Hosts call this with the current index too (e.g. after restoring a project): only a change applies a preset.
+    if (! juce::isPositiveAndBelow (index, getNumPrograms()) || index == getCurrentProgram())
+        return;
+    presets::apply (apvts, presets::factory()[(size_t) index]);
+    apvts.state.setProperty ("program", index, nullptr);
+    apvts.state.setProperty ("presetName", getProgramName (index), nullptr);
+    rebuild();
+}
+
+juce::String DarkMPEProcessor::getPresetName() const
+{
+    return apvts.state.getProperty ("presetName", "Init").toString();
+}
+
+bool DarkMPEProcessor::saveUserPreset (const juce::File& file)
+{
+    if (! presets::save (apvts, getSeed(), getVariation(), file))
+        return false;
+    apvts.state.setProperty ("presetName", file.getFileNameWithoutExtension(), nullptr);
+    return true;
+}
+
+bool DarkMPEProcessor::loadUserPreset (const juce::File& file)
+{
+    int seed = getSeed(), variation = 0;
+    if (! presets::load (apvts, file, seed, variation))
+        return false;
+    apvts.state.setProperty ("program", -1, nullptr);
+    apvts.state.setProperty ("presetName", file.getFileNameWithoutExtension(), nullptr);
+    setSeed (seed, variation); // rebuilds
+    return true;
 }
 
 juce::AudioProcessorEditor* DarkMPEProcessor::createEditor()

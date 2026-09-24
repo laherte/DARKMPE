@@ -106,6 +106,7 @@ private:
     void layoutContent();
     void showScaleMenu();
     void showSeedMenu();
+    void showPresetMenu();
     void updateSeedControls();
     void setScale (float scale);
 
@@ -117,6 +118,7 @@ private:
     juce::TextButton newBtn { "NEW" }, mutateBtn { "MUTATE" }, loadBtn { "LOAD MIDI" }, captureBtn { "CAPTURE" }, exportBtn { "EXPORT" };
     juce::TextButton scaleBtn { "100%" };
     juce::TextButton prevBtn, nextBtn, seedBtn, favBtn; // seed history and favourites
+    juce::TextButton presetBtn;
     Toggle previewToggle;
     DragOut dragOut { *this };
     juce::Label status;

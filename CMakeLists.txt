@@ -45,6 +45,7 @@ target_sources(DarkMPE PRIVATE
     ${ENGINE_SOURCES}
     Source/PluginProcessor.cpp
     Source/PortHub.cpp
+    Source/presets/Presets.cpp
     Source/PluginEditor.cpp
     Source/ui/PianoRoll.cpp
     Source/ui/MpeMonitor.cpp)
@@ -84,6 +85,7 @@ target_sources(DarkMPEProcessorTests PRIVATE
     ${ENGINE_SOURCES}
     Source/PluginProcessor.cpp
     Source/PortHub.cpp
+    Source/presets/Presets.cpp
     Source/PluginEditor.cpp
     Source/ui/PianoRoll.cpp
     Source/ui/MpeMonitor.cpp

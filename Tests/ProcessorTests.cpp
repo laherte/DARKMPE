@@ -411,6 +411,45 @@ public:
            #endif
         }
 
+        beginTest ("Presets: every factory preset plays, programs, user presets round-trip");
+        {
+            DarkMPEProcessor proc;
+            setParam (proc, "virtualOut", 0.0f);
+            auto value = [&] (const char* id) { return proc.apvts.getRawParameterValue (id)->load(); };
+            for (int i = 1; i < proc.getNumPrograms(); ++i)
+            {
+                proc.setCurrentProgram (i);
+                proc.refreshNow();
+                expectEquals (proc.getCurrentProgram(), i);
+                expectEquals (proc.getPresetName(), proc.getProgramName (i));
+                int notes = 0;
+                for (const auto& st : proc.getRendered()->streams)
+                    notes += (int) st.phrase.notes.size();
+                // Transform presets fall back to the lead when nothing is loaded; everything must play.
+                expectGreaterThan (notes, 0, proc.getProgramName (i) + " plays nothing");
+                expectEquals (value ("virtualOut"), 0.0f, "presets must not touch output settings");
+            }
+
+            // A host re-selecting the current program must not undo the user's edits.
+            proc.setCurrentProgram (2);
+            setParam (proc, "density", 0.1f);
+            proc.setCurrentProgram (2);
+            expectWithinAbsoluteError (value ("density"), 0.1f, 1.0e-4f);
+
+            // User preset: parameters and seed come back.
+            const auto file = juce::File::createTempFile ("dmpreset");
+            setParam (proc, "cTension", 0.77f);
+            proc.setSeed (777, 2);
+            expect (proc.saveUserPreset (file));
+            setParam (proc, "cTension", 0.1f);
+            proc.setSeed (1, 0);
+            expect (proc.loadUserPreset (file));
+            expectWithinAbsoluteError (value ("cTension"), 0.77f, 1.0e-4f);
+            expectEquals (proc.getSeed(), 777);
+            expectEquals (proc.getVariation(), 2);
+            file.deleteFile();
+        }
+
         beginTest ("Seed history and favourites survive the saved state");
         {
             auto notesOf = [] (DarkMPEProcessor& p)

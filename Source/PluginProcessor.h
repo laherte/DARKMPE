@@ -63,10 +63,11 @@ public:
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
 
-    int getNumPrograms() override { return 1; }
-    int getCurrentProgram() override { return 0; }
-    void setCurrentProgram (int) override {}
-    const juce::String getProgramName (int) override { return {}; }
+    // Factory presets are the host's programs.
+    int getNumPrograms() override;
+    int getCurrentProgram() override;
+    void setCurrentProgram (int index) override;
+    const juce::String getProgramName (int index) override;
     void changeProgramName (int, const juce::String&) override {}
 
     void getStateInformation (juce::MemoryBlock& destData) override;
@@ -98,6 +99,11 @@ public:
     bool hasSource() const { return ! source.empty(); }
     juce::String getSourceName() const { return sourceName; }
     juce::String getHarmonyText() const { return harmonyText; } // chord symbols of the cinematic output
+
+    // Presets: factory (also the host's programs) and user files (~/Music/DarkMPE/Presets/*.dmpreset).
+    juce::String getPresetName() const;
+    bool saveUserPreset (const juce::File& file);
+    bool loadUserPreset (const juce::File& file);
 
     void setCapturing (bool shouldCapture);
     bool isCapturing() const { return capturing.load(); }

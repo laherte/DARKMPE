@@ -1,4 +1,7 @@
 #include "PluginEditor.h"
+#include "presets/Presets.h"
+
+#include <map>
 
 using namespace theme;
 
@@ -182,8 +185,10 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     nextBtn.onClick = [this] { proc.historyForward(); updateSeedControls(); };
     favBtn.onClick = [this] { proc.toggleFavourite(); updateSeedControls(); };
     seedBtn.onClick = [this] { showSeedMenu(); };
+    presetBtn.onClick = [this] { showPresetMenu(); };
+    presetBtn.setTooltip ("Factory and user presets");
 
-    for (auto* b : { &newBtn, &mutateBtn, &loadBtn, &captureBtn, &exportBtn, &scaleBtn, &prevBtn, &nextBtn, &seedBtn, &favBtn })
+    for (auto* b : { &newBtn, &mutateBtn, &loadBtn, &captureBtn, &exportBtn, &scaleBtn, &prevBtn, &nextBtn, &seedBtn, &favBtn, &presetBtn })
         content.addAndMakeVisible (*b);
     content.addAndMakeVisible (previewToggle);
     content.addAndMakeVisible (dragOut);
@@ -311,9 +316,82 @@ void DarkMPEEditor::updateSeedControls()
         seedBtn.setButtonText (text);
     prevBtn.setEnabled (proc.canGoBack());
     nextBtn.setEnabled (proc.canGoForward());
+    const auto preset = juce::String (juce::CharPointer_UTF8 ("PRESET \xe2\x96\xbe  ")) + proc.getPresetName();
+    if (presetBtn.getButtonText() != preset)
+        presetBtn.setButtonText (preset);
     const bool fav = proc.isFavourite();
     favBtn.setButtonText (juce::CharPointer_UTF8 (fav ? "\xe2\x98\x85" : "\xe2\x98\x86"));
     favBtn.setToggleState (fav, juce::dontSendNotification);
+}
+
+void DarkMPEEditor::showPresetMenu()
+{
+    const auto& factory = presets::factory();
+    const int current = proc.getCurrentProgram();
+
+    juce::PopupMenu m;
+    m.addItem (1, "Init", true, current == 0);
+    std::map<juce::String, juce::PopupMenu> groups;
+    for (size_t i = 1; i < factory.size(); ++i)
+    {
+        const juce::String name (factory[i].name);
+        groups[name.upToFirstOccurrenceOf (" - ", false, false)]
+            .addItem (1 + (int) i, name.fromFirstOccurrenceOf (" - ", false, false), true, current == (int) i);
+    }
+    for (const char* group : { "Lead", "Cinematic", "Kit", "Transform" })
+        m.addSubMenu (group, groups[group]);
+
+    auto files = presets::userFolder().findChildFiles (juce::File::findFiles, false, "*.dmpreset");
+    files.sort();
+    juce::PopupMenu user;
+    for (int i = 0; i < files.size(); ++i)
+        user.addItem (1000 + i, files[i].getFileNameWithoutExtension());
+    if (files.isEmpty())
+        user.addItem (-1, "(none yet)", false);
+    m.addSubMenu ("User", user);
+    m.addSeparator();
+    m.addItem (5000, "Save preset...");
+    m.addItem (5001, "Show preset folder");
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&presetBtn),
+                     [safe = juce::Component::SafePointer<DarkMPEEditor> (this), files] (int result)
+                     {
+                         if (safe == nullptr || result <= 0)
+                             return;
+                         auto& ed = *safe;
+                         if (result < 1000)
+                         {
+                             ed.proc.setCurrentProgram (result - 1);
+                             ed.setStatus ("Preset: " + ed.proc.getPresetName());
+                         }
+                         else if (result < 5000 && result - 1000 < files.size())
+                         {
+                             const auto f = files[result - 1000];
+                             ed.setStatus (ed.proc.loadUserPreset (f) ? "Preset: " + f.getFileNameWithoutExtension() : "Could not read " + f.getFileName());
+                         }
+                         else if (result == 5001)
+                         {
+                             presets::userFolder().createDirectory();
+                             presets::userFolder().revealToUser();
+                         }
+                         else if (result == 5000)
+                         {
+                             presets::userFolder().createDirectory();
+                             ed.chooser = std::make_unique<juce::FileChooser> ("Save DarkMPE preset",
+                                                                               presets::userFolder().getChildFile (juce::File::createLegalFileName (ed.proc.getPresetName()) + ".dmpreset"),
+                                                                               "*.dmpreset");
+                             ed.chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
+                                                      [safe] (const juce::FileChooser& fc)
+                                                      {
+                                                          const auto f = fc.getResult().withFileExtension ("dmpreset");
+                                                          if (safe == nullptr || fc.getResult() == juce::File())
+                                                              return;
+                                                          safe->setStatus (safe->proc.saveUserPreset (f) ? "Saved preset " + f.getFileNameWithoutExtension()
+                                                                                                         : juce::String ("Could not save the preset"));
+                                                      });
+                         }
+                         ed.updateSeedControls();
+                     });
 }
 
 void DarkMPEEditor::showSeedMenu()
@@ -494,6 +572,8 @@ void DarkMPEEditor::layoutContent()
     for (auto* b : { &genTab, &xformTab, &cineTab })
         b->setBounds (header.removeFromLeft (100).reduced (2, 4));
     kitTab.setBounds (header.removeFromLeft (64).reduced (2, 4));
+    header.removeFromLeft (14);
+    presetBtn.setBounds (header.removeFromLeft (250).reduced (2, 6));
     scaleBtn.setBounds (header.removeFromRight (58).reduced (2, 6));
     header.removeFromRight (12);
     favBtn.setBounds (header.removeFromRight (34).reduced (2, 6));
