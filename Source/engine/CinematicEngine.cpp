@@ -20,7 +20,8 @@ float shapeCurve (GlideShape s, float x)
     x = std::clamp (x, 0.0f, 1.0f);
     switch (s)
     {
-        case GlideShape::ease:     return x * x * (3.0f - 2.0f * x);
+        case GlideShape::ease:
+        case GlideShape::stepped:  return x * x * (3.0f - 2.0f * x);
         case GlideShape::swoopIn:  return x * x * x;
         case GlideShape::swoopOut: return 1.0f - (1.0f - x) * (1.0f - x) * (1.0f - x);
         case GlideShape::linear:
@@ -42,16 +43,53 @@ std::vector<int> transposed (std::vector<int> v, int semis)
     return v;
 }
 
+// Where Stepped glides may stop: the notes of this key / scale.
+struct StepContext
+{
+    int key;
+    scales::Scale scale;
+};
+
 // Appends a shaped transition (from -> to between t0 and t1) to a curve, keeping it time-ordered.
-void addTransition (Curve& c, double t0, double t1, float from, float to, GlideShape shape)
+// Offsets are semitones above `basePitch`; a Stepped transition walks through the scale notes in between,
+// sliding quickly into each one and holding it (a brass / harp glissando).
+void addTransition (Curve& c, double t0, double t1, float from, float to, GlideShape shape,
+                    int basePitch = 0, const StepContext* steps = nullptr)
 {
     t0 = std::max (t0, c.empty() ? 0.0 : c.back().t);
     t1 = std::max (t1, t0 + 1.0e-3);
     c.push_back ({ t0, from });
-    constexpr int steps = 16;
-    for (int i = 1; i <= steps; ++i)
+
+    if (shape == GlideShape::stepped && steps != nullptr)
     {
-        const float x = (float) i / steps;
+        std::vector<float> path;
+        const int a = basePitch + (int) std::lround (from), b = basePitch + (int) std::lround (to);
+        const int dir = b > a ? 1 : -1;
+        for (int p = a + dir; p != b && a != b; p += dir)
+            if (scales::inScale (p, steps->key, steps->scale))
+                path.push_back ((float) (p - basePitch));
+        path.push_back (to);
+
+        const double seg = (t1 - t0) / (double) path.size();
+        float cur = from;
+        for (size_t i = 0; i < path.size(); ++i)
+        {
+            const double s0 = t0 + seg * (double) i;
+            for (int j = 1; j <= 4; ++j)
+            {
+                const float x = (float) j / 4.0f;
+                c.push_back ({ s0 + seg * 0.3 * x, cur + (path[i] - cur) * shapeCurve (GlideShape::ease, x) });
+            }
+            cur = path[i];
+        }
+        c.push_back ({ t1, to });
+        return;
+    }
+
+    constexpr int stepsPerTransition = 16;
+    for (int i = 1; i <= stepsPerTransition; ++i)
+    {
+        const float x = (float) i / stepsPerTransition;
         c.push_back ({ t0 + (t1 - t0) * x, from + (to - from) * shapeCurve (shape, x) });
     }
 }
@@ -74,13 +112,41 @@ std::vector<double> sampleTimes (const Curve& c, double len)
 size_t regionAt (const std::vector<Region>& regions, double t)
 {
     size_t r = 0;
-    while (r + 1 < regions.size() && regions[r + 1].start <= t)
+    while (r + 1 < regions.size() && regions[r + 1].start <= t + 1.0e-9)
         ++r;
     return r;
 }
 
+std::vector<bool> euclid16 (int pulses)
+{
+    std::vector<bool> pat (16, false);
+    for (int i = 0; i < 16; ++i)
+        pat[(size_t) i] = ((i * pulses) % 16) < pulses;
+    pat[0] = true;
+    return pat;
+}
+
+int medianPitch (std::vector<int> v)
+{
+    std::sort (v.begin(), v.end());
+    return v[v.size() / 2];
+}
+
+// Suspension of a voice entering a chord: the step above the 3rd (4-3), above the root (9-8 / b9-8) or above the
+// fifth (6-5 / b6-5). Darkness prefers the semitone versions.
+int suspensionFor (int pitch, int rootPitch, float darkness)
+{
+    const int rel = mod (pitch - rootPitch, 12);
+    const bool dark = darkness > 0.5f;
+    if (rel == 3 || rel == 4) return 5 - rel;
+    if (rel == 0)             return dark ? 1 : 2;
+    if (rel == 7)             return dark ? 1 : 2;
+    return 0;
+}
+
 } // namespace
 
+// ------------------------------------------------------------------ harmony
 int estimateRoot (const std::vector<int>& pitches)
 {
     if (pitches.empty())
@@ -109,7 +175,7 @@ int estimateRoot (const std::vector<int>& pitches)
     return best;
 }
 
-std::vector<Region> buildRegions (const Phrase& input, Reharm reharm, double lengthBeats)
+std::vector<Region> regionsFromPhrase (const Phrase& input, double lengthBeats)
 {
     std::vector<Region> regions;
     const auto chords = detectChords (input);
@@ -132,9 +198,35 @@ std::vector<Region> buildRegions (const Phrase& input, Reharm reharm, double len
                 r.pitches.push_back (p);
         regions.push_back (r);
     }
+    return regions;
+}
 
-    if (reharm == Reharm::off || regions.empty())
+std::vector<Region> reharmonise (std::vector<Region> regions, Reharm reharm, int tonicPc)
+{
+    if (reharm == Reharm::off || reharm == Reharm::suspensions || regions.empty())
         return regions;
+
+    if (reharm == Reharm::tonicPedal)
+    {
+        for (auto& r : regions)
+            r.bassPc = mod (tonicPc, 12);
+        return regions;
+    }
+
+    if (reharm == Reharm::planing)
+    {
+        // Parallel harmony: every chord takes the interval structure of the first one.
+        const auto& first = regions.front();
+        std::vector<int> shape;
+        for (int p : first.pitches)
+            shape.push_back (p - first.pitches.front());
+        for (auto& r : regions)
+        {
+            r.pitches = transposed (shape, r.pitches.front());
+            r.bassPc = -1;
+        }
+        return regions;
+    }
 
     std::vector<Region> out;
     for (size_t i = 0; i < regions.size(); ++i)
@@ -165,6 +257,7 @@ std::vector<Region> buildRegions (const Phrase& input, Reharm reharm, double len
             }
 
             case Reharm::chromaticApproach:
+            case Reharm::tritoneApproach:
             {
                 if (i + 1 < regions.size())
                 {
@@ -174,7 +267,7 @@ std::vector<Region> buildRegions (const Phrase& input, Reharm reharm, double len
                         Region a;
                         a.start = r.start + r.length - approach;
                         a.length = approach;
-                        a.pitches = transposed (regions[i + 1].pitches, 1);
+                        a.pitches = transposed (regions[i + 1].pitches, reharm == Reharm::tritoneApproach ? 6 : 1);
                         r.length -= approach;
                         out.push_back (r);
                         out.push_back (a);
@@ -193,6 +286,7 @@ std::vector<Region> buildRegions (const Phrase& input, Reharm reharm, double len
                     m.length = r.length * 0.5;
                     m.start = r.start + m.length;
                     m.pitches = transposed (r.pitches, (i % 2 == 0) ? 4 : -4);
+                    m.bassPc = r.bassPc >= 0 ? mod (r.bassPc + ((i % 2 == 0) ? 4 : -4), 12) : -1;
                     r.length -= m.length;
                     out.push_back (r);
                     out.push_back (m);
@@ -203,12 +297,22 @@ std::vector<Region> buildRegions (const Phrase& input, Reharm reharm, double len
             }
 
             case Reharm::off:
+            case Reharm::suspensions:
+            case Reharm::tonicPedal:
+            case Reharm::planing:
             case Reharm::count:
                 out.push_back (r);
                 break;
         }
     }
     return out;
+}
+
+std::vector<Region> buildRegions (const Phrase& input, Reharm reharm, double lengthBeats)
+{
+    auto regions = regionsFromPhrase (input, lengthBeats);
+    const int tonic = regions.empty() ? 0 : mod (regions.front().pitches.front(), 12);
+    return reharmonise (std::move (regions), reharm, tonic);
 }
 
 Phrase demoProgression (int key, scales::Scale scale, int bars)
@@ -231,21 +335,31 @@ Phrase demoProgression (int key, scales::Scale scale, int bars)
     return p;
 }
 
-Phrase cinematic (const Phrase& input, const CineParams& p)
+// ------------------------------------------------------------------ motion
+Phrase cinematic (const Phrase& input, const CineParams& p, std::vector<Region>* usedRegions)
+{
+    auto regions = regionsFromPhrase (input, input.lengthBeats);
+    const int tonic = regions.empty() ? 0 : mod (regions.front().pitches.front(), 12);
+    return cinematicRegions (std::move (regions), input.lengthBeats, p, tonic, usedRegions);
+}
+
+Phrase cinematicRegions (std::vector<Region> regions, double lengthBeats, const CineParams& p, int tonicPc,
+                         std::vector<Region>* usedRegions)
 {
     Phrase out;
-    out.lengthBeats = input.lengthBeats;
-    if (input.empty())
-        return out;
-
-    const auto regions = buildRegions (input, p.reharm, input.lengthBeats);
+    out.lengthBeats = lengthBeats;
     if (regions.empty())
         return out;
+
+    colourRegions (regions, p.tension, p.darkness, p.seed);
+    regions = reharmonise (std::move (regions), p.reharm, tonicPc);
+    if (usedRegions != nullptr)
+        *usedRegions = regions;
 
     // ---- voice every region into fixed slots with minimal motion
     VoicingParams vp;
     vp.mode = (p.voicing == VoicingMode::asPlayed || p.voicing == VoicingMode::unisonStack) ? VoicingMode::epicSpread : p.voicing;
-    vp.voices = std::clamp (p.voices, 2, 6);
+    vp.voices = std::clamp (p.voices, 2, 8);
     vp.lowPitch = p.lowPitch;
     vp.highPitch = std::max (p.highPitch, p.lowPitch + 24);
     vp.bassAnchor = true;
@@ -258,8 +372,15 @@ Phrase cinematic (const Phrase& input, const CineParams& p)
         c.start = r.start;
         c.length = r.length;
         c.pitches = r.pitches;
+        c.bassPc = r.bassPc;
         slots.push_back (voiceChordSlots (c, vp, slots.empty() ? nullptr : &slots.back()));
     }
+
+    // Sub: one more voice an octave under the bass, following it.
+    const int bassSlot = p.sub ? 1 : 0;
+    if (p.sub)
+        for (auto& s : slots)
+            s.insert (s.begin(), s.front() - 12 >= 21 ? s.front() - 12 : s.front());
 
     const int n = (int) slots.front().size();
     Rng rng ((uint64_t) p.seed * 977ull + 5ull);
@@ -267,15 +388,28 @@ Phrase cinematic (const Phrase& input, const CineParams& p)
     for (int k = 0; k < n; ++k)
         lag[(size_t) k] = p.stagger * ((n > 1 ? (float) k / (float) (n - 1) : 0.0f) + 0.15f * rng.bipolar());
 
-    auto medianPitch = [] (std::vector<int> v)
+    // Suspensions: per region, up to two upper voices enter a step above their note.
+    std::vector<std::vector<int>> sus (regions.size(), std::vector<int> ((size_t) n, 0));
+    if (p.reharm == Reharm::suspensions)
     {
-        std::sort (v.begin(), v.end());
-        return v[v.size() / 2];
-    };
+        Rng susRng ((uint64_t) p.seed * 6151ull + 29ull);
+        for (size_t r = 0; r < regions.size(); ++r)
+        {
+            int placed = 0;
+            for (int k = n - 1; k > bassSlot && placed < 2; --k)
+                if (susRng.chance (0.55f))
+                    if (const int s = suspensionFor (slots[r][(size_t) k], regions[r].pitches.front(), p.darkness); s != 0)
+                    {
+                        sus[r][(size_t) k] = s;
+                        ++placed;
+                    }
+        }
+    }
 
+    const StepContext steps { p.key, p.scale };
     std::vector<Note> notes;
 
-    if (p.motion == Motion::morph)
+    if (p.motion == Motion::morph || p.motion == Motion::deepNote)
     {
         for (int k = 0; k < n; ++k)
         {
@@ -313,13 +447,86 @@ Phrase cinematic (const Phrase& input, const CineParams& p)
                 t0 = std::max (t0, regions[r - 1].start + 0.02);
                 double t1 = std::min (t0 + dur, regions[r].start + regions[r].length - 0.02);
                 const float target = (float) (to - cur.pitch);
-                addTransition (cur.bend, t0 - cur.start, t1 - cur.start, offset, target, p.shape);
+                addTransition (cur.bend, t0 - cur.start, t1 - cur.start, offset, target, p.shape, cur.pitch, &steps);
                 offset = target;
             }
 
             const auto& last = regions.back();
             cur.length = last.start + last.length - cur.start;
             notes.push_back (cur);
+        }
+
+        if (p.motion == Motion::deepNote)
+        {
+            // THX-style intro: the first chord grows out of a drifting cluster of detuned voices.
+            const auto& first = regions.front();
+            // Converged before the first glide to the next chord starts (it may anticipate the change).
+            const double conv0 = 0.3 * first.length, conv1 = 0.62 * first.length;
+            const int centre = medianPitch (slots.front());
+            Rng deep ((uint64_t) p.seed * 3571ull + 101ull);
+            for (auto& note : notes)
+            {
+                if (note.start > first.start + 1.0e-9)
+                    continue;
+                const float target = evalCurve (note.bend, conv1, 0.0f);
+                float v = std::clamp ((float) (centre - note.pitch) + deep.bipolar() * 5.0f, -47.0f, 47.0f);
+                Curve c;
+                c.push_back ({ 0.0, v });
+                for (double w : { 0.08, 0.16, 0.24 })
+                {
+                    v = std::clamp (v + deep.bipolar() * 1.2f, -47.0f, 47.0f);
+                    c.push_back ({ w * first.length, v });
+                }
+                addTransition (c, conv0, conv1, v, target, GlideShape::ease);
+                for (const auto& pt : note.bend)
+                    if (pt.t > conv1 + 1.0e-9)
+                        c.push_back (pt);
+                note.bend = std::move (c);
+            }
+        }
+    }
+    else if (p.motion == Motion::pulse)
+    {
+        const auto pattern = euclid16 (std::clamp ((int) std::lround (4.0f + 12.0f * p.pulse), 1, 16));
+        constexpr double stepLen = 0.25;
+        const double glideDur = 0.04 + 0.25 * p.glide;
+
+        for (size_t r = 0; r < regions.size(); ++r)
+        {
+            const auto& reg = regions[r];
+            const double end = reg.start + reg.length;
+            bool firstHit = true;
+            for (double t = std::ceil (reg.start / stepLen - 1.0e-9) * stepLen; t < end - 1.0e-9; t += stepLen)
+            {
+                const int step = (int) std::lround (t / stepLen) % 16;
+                if (! pattern[(size_t) step])
+                    continue;
+                const double len = std::min (stepLen * 0.55, end - t - 0.01);
+                if (len < 0.03)
+                    continue;
+
+                for (int k = 0; k < n; ++k)
+                {
+                    Note hit;
+                    hit.voiceIndex = k;
+                    hit.start = t;
+                    hit.length = len;
+                    hit.pitch = slots[r][(size_t) k];
+                    hit.accent = step % 4 == 0;
+                    hit.bend.push_back ({ 0.0, 0.0f });
+                    if (firstHit && r > 0)
+                    {
+                        const float from = (float) std::clamp (slots[r - 1][(size_t) k] - hit.pitch, -24, 24);
+                        if (std::abs (from) > 0.0f)
+                        {
+                            hit.bend.front().v = from;
+                            addTransition (hit.bend, 0.0, std::min (glideDur, len * 0.9), from, 0.0f, p.shape, hit.pitch, &steps);
+                        }
+                    }
+                    notes.push_back (hit);
+                }
+                firstHit = false;
+            }
         }
     }
     else
@@ -340,24 +547,62 @@ Phrase cinematic (const Phrase& input, const CineParams& p)
                 note.start = reg.start;
                 note.length = reg.length;
                 note.pitch = slots[r][(size_t) k];
+
+                if (p.motion == Motion::tensionRise)
+                {
+                    // The chord stretches: bass down, upper voices up, faster and faster into the change.
+                    const float pos = n > 1 ? (float) k / (float) (n - 1) : 1.0f;
+                    const float rise = k <= bassSlot ? -(2.0f + 5.0f * p.glide) : (pos - 0.3f) * (3.0f + 9.0f * p.glide);
+                    note.bend.push_back ({ 0.0, 0.0f });
+                    addTransition (note.bend, reg.length * (0.2 + 0.1 * std::abs (lag[(size_t) k])), reg.length - 0.02,
+                                   0.0f, std::clamp (rise, -24.0f, 24.0f), GlideShape::swoopIn);
+                    notes.push_back (note);
+                    continue;
+                }
+
                 const float away = (float) std::clamp (centre - note.pitch, -48, 48);
                 const double delay = std::abs (lag[(size_t) k]) * dur * 0.5;
 
                 note.bend.push_back ({ 0.0, in ? away : 0.0f });
                 if (in)
-                    addTransition (note.bend, delay, std::min (reg.length * 0.95, delay + dur), away, 0.0f, p.shape);
+                    addTransition (note.bend, delay, std::min (reg.length * 0.95, delay + dur), away, 0.0f, p.shape, note.pitch, &steps);
                 if (outward)
                     addTransition (note.bend, std::max (note.bend.back().t, reg.length - dur - delay),
-                                   reg.length - 0.01, 0.0f, away, p.shape);
+                                   reg.length - 0.01, 0.0f, away, p.shape, note.pitch, &steps);
                 notes.push_back (note);
             }
         }
     }
 
-    // ---- per-note expression: top-voice vibrato, pressure + timbre swell per chord
+    // ---- per-note expression: suspensions, top-voice vibrato, falls, pressure + timbre swell, phrase arc
     int topPitch = 0;
     for (const auto& s : slots)
         topPitch = std::max (topPitch, *std::max_element (s.begin(), s.end()));
+
+    const bool spanning = p.motion == Motion::morph || p.motion == Motion::deepNote;
+    const float fallDepth = p.fall > 0.0f ? 1.0f + 4.0f * p.fall : 0.0f;
+    const double phraseLen = std::max (1.0, lengthBeats);
+
+    // Suspension offset of voice k at absolute time `abs` (resolves between 35% and 60% of the chord).
+    auto suspension = [&] (int k, double abs, bool noteSpansChords)
+    {
+        const size_t ri = regionAt (regions, abs);
+        const auto& reg = regions[ri];
+        float v = 0.0f;
+        if (const int s = sus[ri][(size_t) k]; s != 0)
+        {
+            const float x = (float) ((abs - (reg.start + 0.35 * reg.length)) / (0.25 * reg.length));
+            v += (float) s * (1.0f - shapeCurve (GlideShape::ease, x));
+        }
+        // A long note bends into the next chord's suspension together with its glide.
+        if (noteSpansChords && ri + 1 < regions.size())
+            if (const int s = sus[ri + 1][(size_t) k]; s != 0)
+            {
+                const double ramp = std::min (0.5, 0.2 * regions[ri + 1].length);
+                v += (float) s * smoothstep ((float) (regions[ri + 1].start - ramp), (float) regions[ri + 1].start, (float) abs);
+            }
+        return v;
+    };
 
     for (auto& note : notes)
     {
@@ -365,26 +610,46 @@ Phrase cinematic (const Phrase& input, const CineParams& p)
         const float voicePos = n > 1 ? (float) k / (float) (n - 1) : 0.5f;
         const bool isTop = note.pitch >= topPitch - 7 && voicePos > 0.7f;
         const float reg = std::clamp ((float) (note.pitch - 36) / 60.0f, 0.0f, 1.0f);
+        const double len = std::max (0.05, note.length);
+        const size_t firstRegion = regionAt (regions, note.start);
+        const double regionEnd = regions[firstRegion].start + regions[firstRegion].length;
+
+        // Falls: at the end of a chord (for Pulse only its last hit), never on the bass / sub.
+        const bool falls = fallDepth > 0.0f && k > bassSlot
+                        && (p.motion != Motion::pulse || note.end() > regionEnd - 0.26);
+        const double fallLen = std::min (0.5, 0.18 * len);
 
         Curve bend, slide, pressure;
-        const double len = std::max (0.05, note.length);
         for (const double t : sampleTimes (note.bend, len))
         {
             const double abs = note.start + t;
             const auto& region = regions[regionAt (regions, abs)];
             const float x = (float) ((abs - region.start) / std::max (0.25, region.length));
+            const float arcGain = 1.0f - p.arc * 0.55f * (1.0f - smoothstep (0.0f, 1.0f, (float) (abs / phraseLen)));
+            const float fx = falls ? (float) std::clamp ((t - (len - fallLen)) / fallLen, 0.0, 1.0) : 0.0f;
 
-            float b = evalCurve (note.bend, t, 0.0f);
+            float b = evalCurve (note.bend, t, 0.0f) + suspension (k, abs, spanning && note.length > region.length + 1.0e-6);
             if (isTop && x > 0.35f && region.length >= 2.0)
-                b += 0.12f * smoothstep (0.35f, 0.7f, x) * (float) std::sin (6.283185307 * 1.2 * (abs - region.start));
-            bend.push_back ({ t, b });
+            {
+                const float depth = (0.05f + 0.12f * p.swell) * (0.7f + 0.6f * p.arc * (float) (abs / phraseLen));
+                b += depth * smoothstep (0.35f, 0.7f, x) * (float) std::sin (6.283185307 * 1.2 * (abs - region.start));
+            }
+            b -= fallDepth * fx * fx;
+            bend.push_back ({ t, std::clamp (b, -48.0f, 48.0f) });
 
-            const float press = 0.18f + p.swell * 0.7f * smoothstep (0.0f, 0.75f, x)
-                              - p.swell * 0.2f * smoothstep (0.92f, 1.0f, x);
-            pressure.push_back ({ t, std::clamp (press, 0.0f, 1.0f) });
+            float press;
+            if (p.motion == Motion::pulse)
+                press = (note.accent ? 0.75f : 0.5f) * (1.0f - 0.6f * (float) (t / len)) * (0.55f + 0.45f * p.swell * smoothstep (0.0f, 1.0f, x));
+            else if (p.motion == Motion::tensionRise)
+                press = 0.2f + p.swell * 0.75f * smoothstep (0.0f, 1.0f, x);
+            else
+                press = 0.18f + p.swell * 0.7f * smoothstep (0.0f, 0.75f, x) - p.swell * 0.2f * smoothstep (0.92f, 1.0f, x);
+            press = press * arcGain * (1.0f - 0.5f * fx);
+            pressure.push_back ({ t, std::clamp (press, 0.04f, 1.0f) });
 
-            const float open = p.swell * 0.55f * smoothstep (0.05f + 0.3f * voicePos * p.stagger, 1.0f, x);
-            slide.push_back ({ t, std::clamp (0.15f + 0.3f * reg + open, 0.0f, 1.0f) });
+            const float riseOpen = p.motion == Motion::tensionRise ? 0.25f * x * x : 0.0f;
+            const float open = p.swell * 0.55f * smoothstep (0.05f + 0.3f * voicePos * p.stagger, 1.0f, x) + riseOpen;
+            slide.push_back ({ t, std::clamp ((0.15f + 0.3f * reg + open) * (0.6f + 0.4f * arcGain), 0.0f, 1.0f) });
         }
 
         note.bend = std::move (bend);
@@ -392,7 +657,7 @@ Phrase cinematic (const Phrase& input, const CineParams& p)
         note.pressure = std::move (pressure);
         note.lockedExpr = true;
         note.voiceCount = n;
-        note.velocity = std::clamp (0.62f + 0.2f * (1.0f - voicePos) + 0.05f * rng.bipolar(), 0.1f, 1.0f);
+        note.velocity = std::clamp (0.62f + 0.2f * (1.0f - voicePos) + (note.accent ? 0.12f : 0.0f) + 0.05f * rng.bipolar(), 0.1f, 1.0f);
         note.releaseVelocity = 0.3f;
     }
 

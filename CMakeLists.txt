@@ -17,6 +17,7 @@ set(ENGINE_SOURCES
     Source/engine/MelodyGenerator.cpp
     Source/engine/VoicingEngine.cpp
     Source/engine/CinematicEngine.cpp
+    Source/engine/HarmonyEngine.cpp
     Source/engine/ExpressionShaper.cpp
     Source/engine/MpeRenderer.cpp
     Source/engine/MidiFileIO.cpp)

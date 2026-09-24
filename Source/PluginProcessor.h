@@ -84,6 +84,7 @@ public:
     juce::String describeSource() const; // e.g. "MPE - 14 notes, 12 with expression"
     bool hasSource() const { return ! source.empty(); }
     juce::String getSourceName() const { return sourceName; }
+    juce::String getHarmonyText() const { return harmonyText; } // chord symbols of the cinematic output
 
     void setCapturing (bool shouldCapture);
     bool isCapturing() const { return capturing.load(); }
@@ -123,6 +124,7 @@ private:
     dmpe::VoicingParams readVoicingParams() const;
     dmpe::ExprParams readExprParams() const;
     dmpe::CineParams readCineParams() const;
+    dmpe::HarmonyParams readHarmonyParams() const;
     float pf (const char* id) const;
     int pi (const char* id) const;
     bool pb (const char* id) const;
@@ -149,6 +151,7 @@ private:
 
     dmpe::Phrase source;
     juce::String sourceName;
+    juce::String harmonyText;
     dmpe::LoadInfo sourceInfo;
 
     // ---- audio thread

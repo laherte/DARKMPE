@@ -33,6 +33,24 @@ int nearestTo (const std::vector<int>& pcs, int target, int exclude)
     return best < 0 ? target : best;
 }
 
+int firstOf (const std::vector<int>& pcs, std::initializer_list<int> wanted)
+{
+    for (int w : wanted)
+        if (std::find (pcs.begin(), pcs.end(), w) != pcs.end())
+            return w;
+    return -1;
+}
+
+// Removes repeated entries, keeping the first occurrence (templates are in priority order).
+std::vector<int> unique (const std::vector<int>& v)
+{
+    std::vector<int> out;
+    for (int x : v)
+        if (std::find (out.begin(), out.end(), x) == out.end())
+            out.push_back (x);
+    return out;
+}
+
 int thirdOf (const std::vector<int>& pcs)
 {
     for (int c : { 3, 4, 2, 5 })
@@ -97,9 +115,45 @@ std::vector<int> templateFor (VoicingMode mode, const std::vector<int>& pcs)
 
         case VoicingMode::epicSpread:
         {
-            // Film-score spread over three octaves: root, fifth, octave, tenth, fifth above, ninth on top.
-            const bool hasNine = std::find (pcs.begin(), pcs.end(), 2) != pcs.end();
-            return { 0, fifth, 12, third + 12, fifth + 12, hasNine ? 26 : 24 + third };
+            // Film-score spread over three octaves: root, fifth, octave and tenth, then the 7th in the middle and
+            // colour tones (9, 11, b9, b13...) up high where they ring instead of muddying. Priority order:
+            // with fewer voices the last entries are dropped.
+            std::vector<int> out { 0, fifth, 12, third + 12 };
+            const int seventh = firstOf (pcs, { 11, 10, 9 });
+            if (seventh >= 0 && seventh != fifth)
+                out.push_back (seventh + 12);
+            bool colour = false;
+            for (int pc : pcs)
+                if (pc != 0 && pc != fifth && pc != third && pc != seventh)
+                {
+                    out.push_back (pc + 24);
+                    colour = true;
+                }
+            out.push_back (fifth + 12);
+            if (! colour)
+                out.push_back (third + 24);
+            out.push_back (24);
+            return unique (out);
+        }
+
+        case VoicingMode::gothic:
+        {
+            const bool minor = third == 3;
+            std::vector<int> out { 0, fifth, 12, third + 12, 25, fifth + 12, minor ? 23 : 22 };
+            for (int pc : pcs)
+                if (pc != 0 && pc != fifth && pc != third)
+                    out.push_back (pc + 24);
+            out.push_back (third + 24);
+            return unique (out);
+        }
+
+        case VoicingMode::hyperSpread:
+        {
+            int colour = -1;
+            for (int pc : pcs)
+                if (pc != 0 && pc != fifth && pc != third)
+                    colour = colour < 0 ? pc : colour;
+            return unique ({ 0, 12, fifth + 12, third + 24, fifth + 24, colour >= 0 ? colour + 36 : 38, 36, third + 36 });
         }
 
         case VoicingMode::quartal:
@@ -158,7 +212,7 @@ double centroid (const std::vector<int>& v)
 // Returns pitches indexed by voice slot.
 std::vector<int> voiceChord (const Chord& chord, const VoicingParams& p, const std::vector<int>* prev)
 {
-    const int n = std::clamp (p.voices, 1, 6);
+    const int n = std::clamp (p.voices, 1, 8);
     const int lo = std::min (p.lowPitch, p.highPitch - 12);
     const int hi = p.highPitch;
 
@@ -201,11 +255,15 @@ std::vector<int> voiceChord (const Chord& chord, const VoicingParams& p, const s
 
     const auto tpl = fitCount (templateFor (p.mode, relativePcs (chord.pitches)), n);
 
-    int bass = lo + mod (rootPc - lo, 12);
+    // The chord is built on the root; only the bass voice takes the inversion / pedal note.
+    const int rootBase = lo + mod (rootPc - lo, 12);
+    const int bass = chord.bassPc >= 0 ? lo + mod (chord.bassPc - lo, 12) : rootBase;
     std::vector<int> shaped;
-    for (int t : tpl)
+    for (size_t i = 0; i < tpl.size(); ++i)
     {
-        int v = bass + t;
+        int v = i == 0 ? bass : rootBase + tpl[i];
+        if (i > 0)
+            while (v <= bass) v += 12;
         while (v > hi) v -= 12;
         shaped.push_back (v);
     }

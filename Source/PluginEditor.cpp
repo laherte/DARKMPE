@@ -111,12 +111,7 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
         proc.setMode (DarkMPEProcessor::Mode::transform);
     };
 
-    cineTab.onClick = [this]
-    {
-        proc.setMode (DarkMPEProcessor::Mode::cinematic);
-        setStatus (proc.hasSource() ? "Cinematic: " + proc.getSourceName() + "  -  " + proc.describeSource()
-                                    : "Cinematic demo in the selected key - load or drop your chords to transform them");
-    };
+    cineTab.onClick = [this] { proc.setMode (DarkMPEProcessor::Mode::cinematic); };
 
     newBtn.onClick = [this] { proc.generateNew(); setStatus ("New seed"); };
     mutateBtn.onClick = [this] { proc.mutate(); setStatus ("Mutated the later bars"); };
@@ -192,17 +187,21 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
                               { "strum", "Strum" }, { "slide", "Legato Glide" } })
         knob (voiceControls, id, label);
 
+    choice (cineControls, "cProg", "Progression");
+    choice (cineControls, "key", "Key");
+    choice (cineControls, "cChordLen", "Chord Length");
+    choice (cineControls, "bars", "Bars");
     choice (cineControls, "cMotion", "Motion");
     choice (cineControls, "cReharm", "Reharmonise");
     choice (cineControls, "cVoicing", "Voicing");
     choice (cineControls, "cShape", "Glide Shape");
-    for (auto [id, label] : { std::pair { "cVoices", "Voices" }, { "cLow", "Low Note" }, { "cHigh", "High Note" },
+    for (auto [id, label] : { std::pair { "cTension", "Tension" }, { "cDark", "Darkness" }, { "cVoices", "Voices" },
                               { "cGlide", "Glide" }, { "cAnticip", "Anticipate" }, { "cStagger", "Stagger" },
-                              { "cSwell", "Swell" } })
+                              { "cSwell", "Swell" }, { "cArc", "Arc" }, { "cFall", "Fall" }, { "cPulse", "Pulse" },
+                              { "cLow", "Low Note" }, { "cHigh", "High Note" } })
         knob (cineControls, id, label);
-    choice (cineControls, "key", "Demo Key");
-    choice (cineControls, "scale", "Demo Scale");
-    choice (cineControls, "bars", "Demo Bars");
+    toggle (cineControls, "cSub", "Sub");
+    choice (cineControls, "scale", "Scale");
 
     for (auto [id, label] : { std::pair { "glideTime", "Glide Time" }, { "glideCurve", "Glide Curve" }, { "detune", "Detune" },
                               { "vibDepth", "Vibrato" }, { "vibRate", "Vib Rate" }, { "vibDelay", "Vib Delay" },
@@ -217,7 +216,12 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     for (auto& c : exprControls)
         c->setVisible (true);
 
-    proc.onRebuilt = [this] { roll.refresh(); };
+    proc.onRebuilt = [this]
+    {
+        roll.refresh();
+        if (proc.getMode() == DarkMPEProcessor::Mode::cinematic)
+            showHarmony();
+    };
 
     setSize (1200, 780);
     updateModeVisibility();
@@ -236,6 +240,12 @@ void DarkMPEEditor::timerCallback()
         updateModeVisibility();
 }
 
+void DarkMPEEditor::showHarmony()
+{
+    setStatus ((proc.hasSource() ? proc.getSourceName() + ":  " : juce::String ("Harmony:  ")) + proc.getHarmonyText()
+               + (proc.hasSource() ? juce::String() : "   (drop your own chords to transform them)"));
+}
+
 void DarkMPEEditor::updateModeVisibility()
 {
     shownMode = proc.getMode();
@@ -252,6 +262,8 @@ void DarkMPEEditor::updateModeVisibility()
     mutateBtn.setEnabled (gen);
     if (xform && proc.hasSource())
         setStatus ("Source: " + proc.getSourceName() + "  -  " + proc.describeSource());
+    if (cine)
+        showHarmony();
     resized();
     repaint();
 }

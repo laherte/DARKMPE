@@ -48,6 +48,14 @@ constexpr const char* cGlide = "cGlide";
 constexpr const char* cAnticip = "cAnticip";
 constexpr const char* cStagger = "cStagger";
 constexpr const char* cSwell = "cSwell";
+constexpr const char* cProg = "cProg";
+constexpr const char* cChordLen = "cChordLen";
+constexpr const char* cTension = "cTension";
+constexpr const char* cDark = "cDark";
+constexpr const char* cPulse = "cPulse";
+constexpr const char* cArc = "cArc";
+constexpr const char* cFall = "cFall";
+constexpr const char* cSub = "cSub";
 // expression
 constexpr const char* glideTime = "glideTime";
 constexpr const char* glideCurve = "glideCurve";
@@ -115,13 +123,21 @@ juce::AudioProcessorValueTreeState::ParameterLayout DarkMPEProcessor::createLayo
     choice (ids::cReharm, "Cine Reharm", names (reharmNames, (int) Reharm::count), 1);
     choice (ids::cVoicing, "Cine Voicing", names (voicingNames, (int) VoicingMode::count), (int) VoicingMode::epicSpread);
     choice (ids::cShape, "Cine Glide Shape", names (glideShapeNames, (int) GlideShape::count), 0);
-    integer (ids::cVoices, "Cine Voices", 2, 6, 6);
+    integer (ids::cVoices, "Cine Voices", 2, 8, 6);
     integer (ids::cLow, "Cine Low Note", 24, 60, 33);
     integer (ids::cHigh, "Cine High Note", 60, 108, 88);
     flt (ids::cGlide, "Cine Glide", 0.05f, 1.0f, 0.5f);
     flt (ids::cAnticip, "Cine Anticipation", 0.0f, 1.0f, 0.5f);
     flt (ids::cStagger, "Cine Stagger", 0.0f, 1.0f, 0.4f);
     flt (ids::cSwell, "Cine Swell", 0.0f, 1.0f, 0.7f);
+    choice (ids::cProg, "Cine Progression", names (progressionNames, (int) Progression::count), 0);
+    choice (ids::cChordLen, "Cine Chord Length", names (chordLengthNames, (int) ChordLength::count), 1);
+    flt (ids::cTension, "Cine Tension", 0.0f, 1.0f, 0.35f);
+    flt (ids::cDark, "Cine Darkness", 0.0f, 1.0f, 0.5f);
+    flt (ids::cPulse, "Cine Pulse Rate", 0.0f, 1.0f, 0.5f);
+    flt (ids::cArc, "Cine Arc", 0.0f, 1.0f, 0.3f);
+    flt (ids::cFall, "Cine Fall", 0.0f, 1.0f, 0.0f);
+    boolean (ids::cSub, "Cine Sub", false);
 
     flt (ids::glideTime, "Glide Time", 0.01f, 0.5f, 0.12f, "beats");
     flt (ids::glideCurve, "Glide Curve", 0.0f, 1.0f, 0.6f);
@@ -268,8 +284,29 @@ CineParams DarkMPEProcessor::readCineParams() const
     c.anticipation = pf (ids::cAnticip);
     c.stagger = pf (ids::cStagger);
     c.swell = pf (ids::cSwell);
+    c.tension = pf (ids::cTension);
+    c.darkness = pf (ids::cDark);
+    c.pulse = pf (ids::cPulse);
+    c.arc = pf (ids::cArc);
+    c.fall = pf (ids::cFall);
+    c.sub = pb (ids::cSub);
+    c.key = pi (ids::key);
+    c.scale = (scales::Scale) pi (ids::scale);
     c.seed = (int) apvts.state.getProperty ("seed", 1);
     return c;
+}
+
+HarmonyParams DarkMPEProcessor::readHarmonyParams() const
+{
+    HarmonyParams h;
+    h.key = pi (ids::key);
+    h.scale = (scales::Scale) pi (ids::scale);
+    h.progression = (Progression) pi (ids::cProg);
+    h.chordLength = (ChordLength) pi (ids::cChordLen);
+    h.bars = barChoices[std::clamp (pi (ids::bars), 0, 3)];
+    h.darkness = pf (ids::cDark);
+    h.seed = (int) apvts.state.getProperty ("seed", 1);
+    return h;
 }
 
 DarkMPEProcessor::Mode DarkMPEProcessor::getMode() const
@@ -312,11 +349,21 @@ void DarkMPEProcessor::rebuild()
     auto r = std::make_shared<Rendered>();
 
     Phrase main;
+    harmonyText = {};
     if (getMode() == Mode::cinematic)
-        main = cinematic (source.empty() ? demoProgression (pi (ids::key), (scales::Scale) pi (ids::scale),
-                                                            barChoices[std::clamp (pi (ids::bars), 0, 3)])
-                                         : source,
-                          readCineParams());
+    {
+        std::vector<Region> used;
+        if (source.empty())
+        {
+            const auto hp = readHarmonyParams();
+            main = cinematicRegions (generateProgression (hp), hp.bars * 4.0, readCineParams(), hp.key, &used);
+        }
+        else
+            main = cinematic (source, readCineParams(), &used);
+
+        for (size_t i = 0; i < used.size() && i < 24; ++i)
+            harmonyText << (i > 0 ? "  " : "") << chordSymbol (used[i]);
+    }
     else if (getMode() == Mode::transform && ! source.empty())
         main = applyVoicing (source, readVoicingParams());
     else
@@ -448,7 +495,8 @@ void DarkMPEProcessor::finishCapture()
 juce::String DarkMPEProcessor::suggestedFileName() const
 {
     if (getMode() == Mode::cinematic)
-        return "DarkMPE Cinematic " + (source.empty() ? juce::String (scales::keyNames[pi (ids::key)]) : sourceName)
+        return "DarkMPE Cinematic "
+             + (source.empty() ? juce::String (scales::keyNames[pi (ids::key)]) + " " + progressionNames[pi (ids::cProg)] : sourceName)
              + " " + motionNames[pi (ids::cMotion)];
 
     if (getMode() == Mode::transform && ! source.empty())

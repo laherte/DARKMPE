@@ -64,6 +64,7 @@ public:
 private:
     void timerCallback() override;
     void updateModeVisibility();
+    void showHarmony();
     void setStatus (const juce::String& s) { status.setText (s, juce::dontSendNotification); }
 
     DarkMPEProcessor& proc;
