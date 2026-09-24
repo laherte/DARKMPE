@@ -531,6 +531,113 @@ public:
     }
 };
 
+// Pitch-bend steps of the note `pitch` between its note-on and `window` beats later (semitones, range 48).
+struct GlideStats { int bends = 0; float maxStep = 0.0f; float last = 0.0f; };
+GlideStats glideStats (const juce::MidiMessageSequence& seq, int pitch, double window)
+{
+    GlideStats g;
+    int ch = -1;
+    double on = 0.0;
+    float prev = 0.0f;
+    bool havePrev = false;
+    for (auto* ev : seq)
+    {
+        const auto& m = ev->message;
+        if (ch < 0 && m.isNoteOn() && m.getNoteNumber() == pitch)
+        {
+            ch = m.getChannel();
+            on = m.getTimeStamp();
+        }
+    }
+    for (auto* ev : seq)
+    {
+        const auto& m = ev->message;
+        if (m.getChannel() != ch || ! m.isPitchWheel() || m.getTimeStamp() < on - 1.0e-9 || m.getTimeStamp() > on + window)
+            continue;
+        const float v = (float) (m.getPitchWheelValue() - 8192) / 8192.0f * 48.0f;
+        if (havePrev)
+        {
+            g.maxStep = std::max (g.maxStep, std::abs (v - prev));
+            ++g.bends;
+        }
+        prev = v;
+        havePrev = true;
+        g.last = v;
+    }
+    return g;
+}
+
+int countEvents (const juce::MidiMessageSequence& seq)
+{
+    int pb = 0, cc = 0, at = 0, notes = 0;
+    for (auto* ev : seq)
+    {
+        const auto& m = ev->message;
+        pb += m.isPitchWheel() ? 1 : 0;
+        cc += m.isController() ? 1 : 0;
+        at += m.isChannelPressure() ? 1 : 0;
+        notes += m.isNoteOn() ? 1 : 0;
+    }
+    std::cout << "      [notes " << notes << " bend " << pb << " cc74 " << cc << " pressure " << at << "]" << std::endl;
+    return seq.getNumEvents();
+}
+
+class RenderTests : public juce::UnitTest
+{
+public:
+    RenderTests() : juce::UnitTest ("Render smoothness") {}
+
+    void runTest() override
+    {
+        beginTest ("An octave glide is rendered in small steps");
+        {
+            Phrase p;
+            p.lengthBeats = 4.0;
+            Note a;
+            a.start = 0.0;
+            a.length = 1.0;
+            a.pitch = 60;
+            Note b = a;
+            b.start = 1.0;
+            b.pitch = 72;
+            b.glideFrom = 60;
+            p.notes = { a, b };
+
+            ExprParams ep;
+            ep.vibratoDepth = 0.0f;
+            ep.detuneCents = 0.0f;
+            shapeExpression (p, ep);
+            RenderOptions ro;
+            ro.includeZoneConfig = false;
+            const auto g = glideStats (renderMpe (p, ro), 72, ep.glideTime + 0.02);
+            std::cout << "    octave glide: " << g.bends << " bend steps, largest " << g.maxStep << " st" << std::endl;
+            expectGreaterThan (g.bends, 16, "glide rendered with too few pitch-bend steps");
+            expectLessOrEqual (g.maxStep, 1.2f, "glide has a large pitch jump");
+            expectLessOrEqual (std::abs (g.last), 0.03f, "glide must land on the note");
+        }
+
+        beginTest ("Event density stays reasonable");
+        {
+            Phrase cine = cinematic (demoProgression (9, scales::Scale::naturalMinor, 8), {});
+            shapeExpression (cine, {});
+            GenParams gp;
+            gp.bars = 8;
+            Phrase lead = generateMelody (gp);
+            shapeExpression (lead, {});
+            const int c = countEvents (renderMpe (cine));
+            const int l = countEvents (renderMpe (lead));
+            std::cout << "    events: cinematic demo 8 bars " << c << ", lead 8 bars " << l << std::endl;
+            expectLessThan (c, cineBudget);
+            expectLessThan (l, leadBudget);
+        }
+    }
+
+    // Regression guards (measured: ~11.8k and ~3k; the 1/32-beat renderer gave 10.3k and 1.7k with 4-step glides).
+    static constexpr int cineBudget = 14000, leadBudget = 4000;
+};
+
+static RenderTests renderTests;
+
 static EngineTests engineTests;
 static CinematicTests cinematicTests;
 static MpeImportTests mpeImportTests;
@@ -622,7 +729,7 @@ int main (int argc, char** argv)
 
     juce::UnitTestRunner runner;
     runner.setAssertOnFailure (false);
-    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests });
+    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &renderTests });
 
     int failures = 0;
     for (int i = 0; i < runner.getNumResults(); ++i)

@@ -27,6 +27,24 @@ float evalCurve (const Curve& c, double t, float def)
     return a.v + (float) ((t - a.t) / span) * (b.v - a.v);
 }
 
+float CurveCursor::at (double t)
+{
+    if (curve.empty())
+        return fallback;
+    if (t <= curve.front().t)
+        return curve.front().v;
+
+    while (index + 1 < curve.size() && curve[index + 1].t <= t)
+        ++index;
+    if (index + 1 >= curve.size())
+        return curve.back().v;
+
+    const auto& a = curve[index];
+    const auto& b = curve[index + 1];
+    const double span = b.t - a.t;
+    return span <= 0.0 ? b.v : a.v + (float) ((t - a.t) / span) * (b.v - a.v);
+}
+
 void Phrase::sortByStart()
 {
     std::stable_sort (notes.begin(), notes.end(), [] (const Note& a, const Note& b)

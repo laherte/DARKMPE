@@ -56,6 +56,21 @@ void addTransition (Curve& c, double t0, double t1, float from, float to, GlideS
     }
 }
 
+// The regular 1/32-beat grid plus every point of an authored curve, so fast transitions keep their shape.
+std::vector<double> sampleTimes (const Curve& c, double len)
+{
+    std::vector<double> ts;
+    for (int i = 0; i * curveResolution < len; ++i)
+        ts.push_back (i * curveResolution);
+    ts.push_back (len);
+    for (const auto& pt : c)
+        if (pt.t > 0.0 && pt.t < len)
+            ts.push_back (pt.t);
+    std::sort (ts.begin(), ts.end());
+    ts.erase (std::unique (ts.begin(), ts.end(), [] (double a, double b) { return b - a < 1.0e-6; }), ts.end());
+    return ts;
+}
+
 size_t regionAt (const std::vector<Region>& regions, double t)
 {
     size_t r = 0;
@@ -353,10 +368,8 @@ Phrase cinematic (const Phrase& input, const CineParams& p)
 
         Curve bend, slide, pressure;
         const double len = std::max (0.05, note.length);
-        const int steps = std::max (1, (int) std::ceil (len / curveResolution));
-        for (int i = 0; i <= steps; ++i)
+        for (const double t : sampleTimes (note.bend, len))
         {
-            const double t = std::min (len, i * curveResolution);
             const double abs = note.start + t;
             const auto& region = regions[regionAt (regions, abs)];
             const float x = (float) ((abs - region.start) / std::max (0.25, region.length));
