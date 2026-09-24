@@ -1067,16 +1067,22 @@ static EngineTests engineTests;
 static CinematicTests cinematicTests;
 static MpeImportTests mpeImportTests;
 
-// DarkMPETests --render <inDir> <outDir>: writes demo MPE clips (every style + every voicing of the .mid files in inDir).
+// DarkMPETests --render <inDir> <outDir>: demo clips. Every lead style (MPE and mono), cinematic showcases,
+// a whole kit (one file per layer), and for every .mid in inDir: all voicings plus cinematic versions.
 static int renderExamples (const juce::File& inDir, const juce::File& outDir)
 {
     outDir.createDirectory();
+
+    auto write = [&] (const juce::MidiMessageSequence& seq, const juce::String& name, size_t notes)
+    {
+        const auto f = outDir.getChildFile (juce::File::createLegalFileName (name) + ".mid");
+        writeMidiFile (makeMidiFile (seq, 125.0, name), f);
+        std::cout << "wrote " << f.getFileName() << "  (" << notes << " notes)" << std::endl;
+    };
     auto save = [&] (Phrase p, const juce::String& name)
     {
         shapeExpression (p, {});
-        const auto f = outDir.getChildFile (juce::File::createLegalFileName (name) + ".mid");
-        writeMidiFile (makeMidiFile (renderMpe (p), 125.0, name), f);
-        std::cout << "wrote " << f.getFileName() << "  (" << p.notes.size() << " notes)" << std::endl;
+        write (renderMpe (p), name, p.notes.size());
     };
 
     for (int s = 0; s < (int) Style::count; ++s)
@@ -1084,22 +1090,70 @@ static int renderExamples (const juce::File& inDir, const juce::File& outDir)
         GenParams gp;
         gp.style = (Style) s;
         gp.seed = 666 + s;
-        save (generateMelody (gp), juce::String ("Lead - ") + styleNames[s]);
+        auto lead = generateMelody (gp);
+        save (lead, juce::String ("Lead - ") + styleNames[s]);
+        shapeExpression (lead, {});
+        write (renderMono (lead, 12, true), juce::String ("Lead - ") + styleNames[s] + " (Mono, bend 12)", lead.notes.size());
     }
 
-    auto cine = [&] (const Phrase& src, const juce::String& base)
-    {
-        for (int m = 0; m < (int) Motion::count; ++m)
-            for (int r = 0; r < (int) Reharm::count; ++r)
-            {
-                CineParams cp;
-                cp.motion = (Motion) m;
-                cp.reharm = (Reharm) r;
-                cp.shape = m == 0 ? GlideShape::linear : GlideShape::swoopOut;
-                save (cinematic (src, cp), "Cinematic - " + base + " - " + motionNames[m] + " - " + reharmNames[r]);
-            }
+    struct Showcase { const char* name; Progression prog; Motion motion; Reharm reharm; VoicingMode voicing; GlideShape shape;
+                      float tension, darkness, fall; bool sub; ChordLength len; };
+    const Showcase shows[] = {
+        { "Epic Minor - Morph",            Progression::epicMinor,        Motion::morph,       Reharm::susResolve,        VoicingMode::epicSpread,  GlideShape::ease,     0.35f, 0.4f, 0.0f, true,  ChordLength::oneBar },
+        { "Mediant Chain - Bloom",         Progression::mediantChain,     Motion::bloom,       Reharm::off,               VoicingMode::gothic,      GlideShape::swoopOut, 0.5f,  0.8f, 0.0f, false, ChordLength::oneBar },
+        { "Tritone Abyss - Deep Note",     Progression::tritoneAbyss,     Motion::deepNote,    Reharm::off,               VoicingMode::hyperSpread, GlideShape::ease,     0.3f,  0.9f, 0.0f, true,  ChordLength::twoBars },
+        { "Lament Bass - Suspensions",     Progression::lamentBass,       Motion::morph,       Reharm::suspensions,       VoicingMode::epicSpread,  GlideShape::stepped,  0.25f, 0.6f, 0.0f, true,  ChordLength::oneBar },
+        { "Phrygian Dark - Pulse",         Progression::phrygianDark,     Motion::pulse,       Reharm::off,               VoicingMode::gothic,      GlideShape::swoopOut, 0.2f,  0.9f, 0.5f, true,  ChordLength::oneBar },
+        { "Tonic Pedal - Tension Rise",    Progression::tonicPedal,       Motion::tensionRise, Reharm::tonicPedal,        VoicingMode::epicSpread,  GlideShape::swoopIn,  0.6f,  0.7f, 0.0f, true,  ChordLength::oneBar },
+        { "Line Cliche - Morph",           Progression::lineCliche,       Motion::morph,       Reharm::off,               VoicingMode::epicSpread,  GlideShape::linear,   0.1f,  0.3f, 0.0f, false, ChordLength::oneBar },
+        { "Harmonic Dominant - Breathe",   Progression::harmonicDominant, Motion::breathe,     Reharm::chromaticApproach, VoicingMode::hyperSpread, GlideShape::ease,     0.4f,  0.6f, 0.4f, false, ChordLength::oneBar },
+        { "Auto - Planing Morph",          Progression::autoSeed,         Motion::morph,       Reharm::planing,           VoicingMode::gothic,      GlideShape::swoopOut, 0.3f,  0.8f, 0.0f, true,  ChordLength::oneBar },
+        { "Neapolitan - Tritone Approach", Progression::neapolitan,       Motion::morph,       Reharm::tritoneApproach,   VoicingMode::epicSpread,  GlideShape::ease,     0.3f,  0.7f, 0.3f, true,  ChordLength::oneBar },
     };
-    cine (demoProgression (9, scales::Scale::naturalMinor, 4), "Demo Am");
+    int index = 1;
+    for (const auto& s : shows)
+    {
+        HarmonyParams hp;
+        hp.key = 9;
+        hp.progression = s.prog;
+        hp.chordLength = s.len;
+        hp.bars = s.len == ChordLength::twoBars ? 8 : 4;
+        hp.darkness = s.darkness;
+        hp.seed = 7;
+        CineParams cp;
+        cp.motion = s.motion;
+        cp.reharm = s.reharm;
+        cp.voicing = s.voicing;
+        cp.shape = s.shape;
+        cp.tension = s.tension;
+        cp.darkness = s.darkness;
+        cp.fall = s.fall;
+        cp.sub = s.sub;
+        cp.arc = 0.4f;
+        cp.seed = 7;
+        std::vector<Region> used;
+        auto phrase = cinematicRegions (generateProgression (hp), hp.bars * 4.0, cp, hp.key, &used);
+        juce::String chords;
+        for (const auto& r : used)
+            chords << " " << chordSymbol (r);
+        std::cout << "  " << s.name << ":" << chords << std::endl;
+        save (phrase, "Cinematic - " + juce::String (index++).paddedLeft ('0', 2) + " " + s.name);
+    }
+
+    KitParams kp;
+    kp.gen.seed = 1312;
+    kp.gen.scale = scales::Scale::phrygian;
+    kp.layers[(size_t) Layer::siren].on = true;
+    kp.pad.motion = Motion::morph;
+    kp.pad.tension = 0.35f;
+    for (auto& part : generateKit (kp))
+    {
+        shapeExpression (part.phrase, {});
+        if (part.layer == Layer::bass)
+            write (renderMono (part.phrase, 12, true), "Kit - Pursuit A Phrygian - Bass (Mono, bend 12)", part.phrase.notes.size());
+        else
+            write (renderMpe (part.phrase), juce::String ("Kit - Pursuit A Phrygian - ") + layerNames[(int) part.layer], part.phrase.notes.size());
+    }
 
     for (const auto& f : inDir.findChildFiles (juce::File::findFiles, false, "*.mid"))
     {
@@ -1107,14 +1161,24 @@ static int renderExamples (const juce::File& inDir, const juce::File& outDir)
         juce::String err;
         if (! loadMidiFile (f, src, err))
             continue;
+        const auto base = f.getFileNameWithoutExtension();
         if (! isMonophonic (src))
-            cine (src, f.getFileNameWithoutExtension());
+            for (auto motion : { Motion::morph, Motion::bloom, Motion::pulse })
+                for (auto reharm : { Reharm::off, Reharm::suspensions })
+                {
+                    CineParams cp;
+                    cp.motion = motion;
+                    cp.reharm = reharm;
+                    cp.tension = 0.3f;
+                    cp.shape = motion == Motion::morph ? GlideShape::ease : GlideShape::swoopOut;
+                    save (cinematic (src, cp), "Cinematic - " + base + " - " + motionNames[(int) motion] + " - " + reharmNames[(int) reharm]);
+                }
         for (int m = 0; m < (int) VoicingMode::count; ++m)
         {
             VoicingParams vp;
             vp.mode = (VoicingMode) m;
             vp.strum = 0.02;
-            save (applyVoicing (src, vp), f.getFileNameWithoutExtension() + " - " + voicingNames[m]);
+            save (applyVoicing (src, vp), base + " - " + voicingNames[m]);
         }
     }
     return 0;
