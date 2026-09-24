@@ -80,6 +80,18 @@ public:
 
     void generateNew();          // new random seed
     void mutate();               // keep the motif, vary the later bars
+
+    // Seed history (NEW / MUTATE / typed seeds, last 32, saved with the project) and favourites.
+    int getSeed() const;
+    int getVariation() const;
+    void setSeed (int seed, int variation);  // goes to a seed and records it in the history
+    bool canGoBack();
+    bool canGoForward();
+    void historyBack() { historyStep (-1); }
+    void historyForward() { historyStep (1); }
+    bool isFavourite() const;
+    void toggleFavourite();
+    std::vector<std::pair<int, int>> getFavourites() const; // {seed, variation}
     bool loadMidi (const juce::File& file, juce::String& error);
     juce::String describeSource() const; // e.g. "MPE - 14 notes, 12 with expression"
     bool hasSource() const { return ! source.empty(); }
@@ -119,6 +131,9 @@ private:
     void handleAsyncUpdate() override { rebuild(); }
     void rebuild();
     void finishCapture();
+    juce::ValueTree history();
+    void historyStep (int delta);
+    void applySeed (int seed, int variation);
 
     dmpe::GenParams readGenParams() const;
     dmpe::VoicingParams readVoicingParams() const;

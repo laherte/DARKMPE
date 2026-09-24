@@ -216,6 +216,51 @@ public:
             checkMpe (run (proc, blocksFor8Bars, blockSize, clock), "generate", 1);
         }
 
+        beginTest ("Seed history and favourites survive the saved state");
+        {
+            auto notesOf = [] (DarkMPEProcessor& p)
+            {
+                std::vector<std::pair<double, int>> v;
+                for (const auto& n : p.getRendered()->focused().phrase.notes)
+                    v.push_back ({ n.start, n.pitch });
+                return v;
+            };
+
+            DarkMPEProcessor proc;
+            setParam (proc, "virtualOut", 0.0f);
+            std::vector<int> seeds;
+            std::vector<std::vector<std::pair<double, int>>> phrases;
+            for (int i = 0; i < 3; ++i)
+            {
+                proc.generateNew();
+                seeds.push_back (proc.getSeed());
+                phrases.push_back (notesOf (proc));
+            }
+            proc.historyBack();
+            expectEquals (proc.getSeed(), seeds[1]);
+            expect (notesOf (proc) == phrases[1], "back must restore the same phrase");
+            proc.historyBack();
+            expectEquals (proc.getSeed(), seeds[0]);
+            expect (notesOf (proc) == phrases[0]);
+            proc.historyForward();
+            expectEquals (proc.getSeed(), seeds[1]);
+            proc.mutate(); // a new branch drops the forward part
+            expect (! proc.canGoForward());
+            expectEquals (proc.getVariation(), 1);
+            proc.toggleFavourite();
+            expect (proc.isFavourite());
+
+            juce::MemoryBlock state;
+            proc.getStateInformation (state);
+            DarkMPEProcessor copy;
+            copy.setStateInformation (state.getData(), (int) state.getSize());
+            expectEquals (copy.getSeed(), proc.getSeed());
+            expectEquals (copy.getVariation(), 1);
+            expect (copy.isFavourite());
+            expect (copy.canGoBack());
+            expect (notesOf (copy) == notesOf (proc), "restored state must render the same phrase");
+        }
+
         beginTest ("Audio thread: no heap allocations, cost per block");
         {
             for (int motion : { 0, 1 }) // Morph (long dense notes), Bloom (many short notes)

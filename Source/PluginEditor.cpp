@@ -168,7 +168,18 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     };
     scaleBtn.onClick = [this] { showScaleMenu(); };
 
-    for (auto* b : { &newBtn, &mutateBtn, &loadBtn, &captureBtn, &exportBtn, &scaleBtn })
+    prevBtn.setButtonText (juce::CharPointer_UTF8 ("\xe2\x97\x80"));
+    nextBtn.setButtonText (juce::CharPointer_UTF8 ("\xe2\x96\xb6"));
+    prevBtn.setTooltip ("Previous seed");
+    nextBtn.setTooltip ("Next seed");
+    seedBtn.setTooltip ("Seed: favourites, or type one");
+    favBtn.setTooltip ("Mark this seed as a favourite");
+    prevBtn.onClick = [this] { proc.historyBack(); updateSeedControls(); };
+    nextBtn.onClick = [this] { proc.historyForward(); updateSeedControls(); };
+    favBtn.onClick = [this] { proc.toggleFavourite(); updateSeedControls(); };
+    seedBtn.onClick = [this] { showSeedMenu(); };
+
+    for (auto* b : { &newBtn, &mutateBtn, &loadBtn, &captureBtn, &exportBtn, &scaleBtn, &prevBtn, &nextBtn, &seedBtn, &favBtn })
         content.addAndMakeVisible (*b);
     content.addAndMakeVisible (previewToggle);
     content.addAndMakeVisible (dragOut);
@@ -253,6 +264,7 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     initialised = true;
 
     updateModeVisibility();
+    updateSeedControls();
     startTimerHz (10);
 }
 
@@ -266,6 +278,60 @@ void DarkMPEEditor::timerCallback()
 {
     if (proc.getMode() != shownMode)
         updateModeVisibility();
+    updateSeedControls();
+}
+
+void DarkMPEEditor::updateSeedControls()
+{
+    const int v = proc.getVariation();
+    const auto text = "#" + juce::String (proc.getSeed()) + (v > 0 ? "  v" + juce::String (v) : juce::String());
+    if (seedBtn.getButtonText() != text)
+        seedBtn.setButtonText (text);
+    prevBtn.setEnabled (proc.canGoBack());
+    nextBtn.setEnabled (proc.canGoForward());
+    const bool fav = proc.isFavourite();
+    favBtn.setButtonText (juce::CharPointer_UTF8 (fav ? "\xe2\x98\x85" : "\xe2\x98\x86"));
+    favBtn.setToggleState (fav, juce::dontSendNotification);
+}
+
+void DarkMPEEditor::showSeedMenu()
+{
+    juce::PopupMenu m;
+    m.addItem (1, "Type a seed...");
+    const auto favs = proc.getFavourites();
+    if (! favs.empty())
+    {
+        m.addSectionHeader ("Favourites");
+        for (size_t i = 0; i < favs.size(); ++i)
+            m.addItem (100 + (int) i, "#" + juce::String (favs[i].first) + (favs[i].second > 0 ? "  v" + juce::String (favs[i].second) : juce::String()),
+                       true, favs[i].first == proc.getSeed() && favs[i].second == proc.getVariation());
+    }
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&seedBtn),
+                     [safe = juce::Component::SafePointer<DarkMPEEditor> (this), favs] (int result)
+                     {
+                         if (safe == nullptr || result <= 0)
+                             return;
+                         if (result >= 100 && result - 100 < (int) favs.size())
+                         {
+                             safe->proc.setSeed (favs[(size_t) (result - 100)].first, favs[(size_t) (result - 100)].second);
+                             safe->updateSeedControls();
+                             return;
+                         }
+
+                         auto* w = new juce::AlertWindow ("Seed", "Type a seed number", juce::MessageBoxIconType::NoIcon);
+                         w->addTextEditor ("seed", juce::String (safe->proc.getSeed()));
+                         w->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+                         w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+                         w->enterModalState (true, juce::ModalCallbackFunction::create ([safe, w] (int r)
+                         {
+                             if (safe != nullptr && r == 1)
+                             {
+                                 safe->proc.setSeed (juce::jmax (0, w->getTextEditorContents ("seed").getIntValue()), 0);
+                                 safe->updateSeedControls();
+                             }
+                         }), true);
+                     });
 }
 
 void DarkMPEEditor::showHarmony()
@@ -382,6 +448,11 @@ void DarkMPEEditor::layoutContent()
     for (auto* b : { &genTab, &xformTab, &cineTab })
         b->setBounds (header.removeFromLeft (100).reduced (2, 4));
     scaleBtn.setBounds (header.removeFromRight (58).reduced (2, 6));
+    header.removeFromRight (12);
+    favBtn.setBounds (header.removeFromRight (34).reduced (2, 6));
+    nextBtn.setBounds (header.removeFromRight (34).reduced (2, 6));
+    seedBtn.setBounds (header.removeFromRight (104).reduced (2, 6));
+    prevBtn.setBounds (header.removeFromRight (34).reduced (2, 6));
 
     // ---- toolbar: actions, status, playback / export
     auto bar = r.removeFromTop (34);

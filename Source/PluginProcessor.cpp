@@ -396,17 +396,106 @@ std::shared_ptr<const Rendered> DarkMPEProcessor::getRendered() const
 
 void DarkMPEProcessor::generateNew()
 {
-    apvts.state.setProperty ("seed", juce::Random::getSystemRandom().nextInt (100000), nullptr);
-    apvts.state.setProperty ("variation", 0, nullptr);
     if (getMode() == Mode::transform)
         setMode (Mode::generate); // the seed shapes the lead and the cinematic harmony, not a transform
-    rebuild();
+    setSeed (juce::Random::getSystemRandom().nextInt (100000), 0);
 }
 
 void DarkMPEProcessor::mutate()
 {
-    apvts.state.setProperty ("variation", (int) apvts.state.getProperty ("variation", 0) + 1, nullptr);
+    setSeed (getSeed(), getVariation() + 1);
+}
+
+// ------------------------------------------------------------------ seed history / favourites
+namespace
+{
+constexpr int maxHistory = 32;
+juce::ValueTree entry (const char* type, int seed, int variation)
+{
+    juce::ValueTree e (type);
+    e.setProperty ("seed", seed, nullptr);
+    e.setProperty ("variation", variation, nullptr);
+    return e;
+}
+bool sameEntry (const juce::ValueTree& e, int seed, int variation)
+{
+    return (int) e.getProperty ("seed") == seed && (int) e.getProperty ("variation") == variation;
+}
+} // namespace
+
+int DarkMPEProcessor::getSeed() const { return (int) apvts.state.getProperty ("seed", 1); }
+int DarkMPEProcessor::getVariation() const { return (int) apvts.state.getProperty ("variation", 0); }
+
+juce::ValueTree DarkMPEProcessor::history()
+{
+    auto h = apvts.state.getOrCreateChildWithName ("History", nullptr);
+    if (h.getNumChildren() == 0)
+    {
+        h.appendChild (entry ("Entry", getSeed(), getVariation()), nullptr);
+        h.setProperty ("index", 0, nullptr);
+    }
+    return h;
+}
+
+void DarkMPEProcessor::setSeed (int seed, int variation)
+{
+    // Like an undo stack: going somewhere new drops the "forward" part.
+    auto h = history();
+    const int index = (int) h.getProperty ("index", 0);
+    while (h.getNumChildren() > index + 1)
+        h.removeChild (h.getNumChildren() - 1, nullptr);
+    h.appendChild (entry ("Entry", seed, variation), nullptr);
+    while (h.getNumChildren() > maxHistory)
+        h.removeChild (0, nullptr);
+    h.setProperty ("index", h.getNumChildren() - 1, nullptr);
+    applySeed (seed, variation);
+}
+
+void DarkMPEProcessor::applySeed (int seed, int variation)
+{
+    apvts.state.setProperty ("seed", seed, nullptr);
+    apvts.state.setProperty ("variation", variation, nullptr);
     rebuild();
+}
+
+bool DarkMPEProcessor::canGoBack() { return (int) history().getProperty ("index", 0) > 0; }
+bool DarkMPEProcessor::canGoForward() { auto h = history(); return (int) h.getProperty ("index", 0) < h.getNumChildren() - 1; }
+
+void DarkMPEProcessor::historyStep (int delta)
+{
+    auto h = history();
+    const int index = juce::jlimit (0, h.getNumChildren() - 1, (int) h.getProperty ("index", 0) + delta);
+    h.setProperty ("index", index, nullptr);
+    const auto e = h.getChild (index);
+    applySeed ((int) e.getProperty ("seed"), (int) e.getProperty ("variation"));
+}
+
+bool DarkMPEProcessor::isFavourite() const
+{
+    for (const auto& f : apvts.state.getChildWithName ("Favourites"))
+        if (sameEntry (f, getSeed(), getVariation()))
+            return true;
+    return false;
+}
+
+void DarkMPEProcessor::toggleFavourite()
+{
+    auto favs = apvts.state.getOrCreateChildWithName ("Favourites", nullptr);
+    for (int i = 0; i < favs.getNumChildren(); ++i)
+        if (sameEntry (favs.getChild (i), getSeed(), getVariation()))
+        {
+            favs.removeChild (i, nullptr);
+            return;
+        }
+    favs.appendChild (entry ("Fav", getSeed(), getVariation()), nullptr);
+}
+
+std::vector<std::pair<int, int>> DarkMPEProcessor::getFavourites() const
+{
+    std::vector<std::pair<int, int>> out;
+    for (const auto& f : apvts.state.getChildWithName ("Favourites"))
+        out.push_back ({ (int) f.getProperty ("seed"), (int) f.getProperty ("variation") });
+    return out;
 }
 
 bool DarkMPEProcessor::loadMidi (const juce::File& file, juce::String& error)

@@ -85,6 +85,8 @@ private:
     void paintOverlay (juce::Graphics&);
     void layoutContent();
     void showScaleMenu();
+    void showSeedMenu();
+    void updateSeedControls();
     void setScale (float scale);
 
     DarkMPEProcessor& proc;
@@ -94,6 +96,7 @@ private:
     juce::TextButton genTab { "GENERATE" }, xformTab { "TRANSFORM" }, cineTab { "CINEMATIC" };
     juce::TextButton newBtn { "NEW" }, mutateBtn { "MUTATE" }, loadBtn { "LOAD MIDI" }, captureBtn { "CAPTURE" }, exportBtn { "EXPORT" };
     juce::TextButton scaleBtn { "100%" };
+    juce::TextButton prevBtn, nextBtn, seedBtn, favBtn; // seed history and favourites
     Toggle previewToggle;
     DragOut dragOut { *this };
     juce::Label status;
