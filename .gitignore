@@ -1,6 +1,7 @@
 # Build output (regenerate with: cmake -B build && cmake --build build -j8)
-build/
-build-*/
+/build/
+/build-*/
+# anchored: on macOS (case-insensitive) an unanchored build/ also hid external/JUCE/extras/Build
 
 # macOS
 .DS_Store
