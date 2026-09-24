@@ -1,0 +1,14 @@
+# Build output (regenerate with: cmake -B build && cmake --build build -j8)
+build/
+build-*/
+
+# macOS
+.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# CMake user files
+CMakeUserPresets.json
