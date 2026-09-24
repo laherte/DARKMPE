@@ -2,6 +2,7 @@
 
 #include "engine/CinematicEngine.h"
 #include "engine/HarmonyEngine.h"
+#include "engine/Humanize.h"
 #include "engine/ExpressionShaper.h"
 #include "engine/MelodyGenerator.h"
 #include "engine/MidiFileIO.h"
@@ -157,6 +158,65 @@ public:
             for (size_t i = 0; ! differs && i < a.notes.size(); ++i)
                 differs = a.notes[i].pitch != c.notes[i].pitch || a.notes[i].start != c.notes[i].start;
             expect (differs, "different seeds should differ");
+        }
+
+        beginTest ("Every style stays in every scale (5-note scales included)");
+        for (int style = 0; style < (int) Style::count; ++style)
+            for (int scale = 0; scale < (int) scales::Scale::count; ++scale)
+            {
+                GenParams gp;
+                gp.style = (Style) style;
+                gp.scale = (scales::Scale) scale;
+                gp.seed = 7 + style * 13 + scale;
+                gp.bars = 8;
+                const auto mel = generateMelody (gp);
+                const juce::String what = juce::String (styleNames[style]) + " / " + scales::scaleNames[scale];
+                expect (! mel.empty(), what);
+                for (const auto& n : mel.notes)
+                    expect (n.chromatic || scales::inScale (n.pitch, gp.key, gp.scale), what + ": out-of-scale note");
+                expect (isMonophonic (mel), what + " must stay a single line");
+            }
+
+        beginTest ("Gallop plays 8th + two 16ths");
+        {
+            GenParams gp;
+            gp.style = Style::gallop;
+            gp.density = 1.0f;
+            const auto mel = generateMelody (gp);
+            std::set<int> steps;
+            for (const auto& n : mel.notes)
+                if (n.start < 4.0)
+                    steps.insert ((int) std::lround (n.start * 4.0));
+            expect (steps == std::set<int> { 0, 2, 3, 4, 6, 7, 8, 10, 11, 12, 14, 15 }, "gallop rhythm");
+        }
+
+        beginTest ("Humanize is deterministic, keeps glide ties and stays in the loop");
+        {
+            GenParams gp;
+            gp.slide = 0.8f;
+            gp.bars = 8;
+            const auto plain = generateMelody (gp);
+            auto zero = plain;
+            humanize (zero, 0.0f, 3);
+            bool same = true;
+            for (size_t i = 0; i < plain.notes.size(); ++i)
+                same = same && zero.notes[i].start == plain.notes[i].start && zero.notes[i].velocity == plain.notes[i].velocity;
+            expect (same, "amount 0 must not change anything");
+
+            auto a = plain, b = plain;
+            humanize (a, 1.0f, 3);
+            humanize (b, 1.0f, 3);
+            int moved = 0;
+            for (size_t i = 0; i < a.notes.size(); ++i)
+            {
+                expect (a.notes[i].start == b.notes[i].start && a.notes[i].velocity == b.notes[i].velocity, "deterministic");
+                expect (a.notes[i].start >= 0.0 && a.notes[i].end() <= a.lengthBeats + 1.0e-6, "note outside phrase");
+                moved += std::abs (a.notes[i].start - plain.notes[i].start) > 1.0e-9 ? 1 : 0;
+            }
+            expectGreaterThan (moved, 0);
+            for (size_t i = 1; i < a.notes.size(); ++i)
+                if (a.notes[i].glideFrom >= 0)
+                    expect (std::abs (a.notes[i - 1].end() - a.notes[i].start) < 1.0e-9, "glide tie broken");
         }
 
         beginTest ("Monophonic lead renders to exclusive MPE channels with bends in range");

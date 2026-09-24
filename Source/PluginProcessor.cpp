@@ -2,6 +2,7 @@
 #include "PluginEditor.h"
 
 #include "engine/MidiFileIO.h"
+#include "engine/Humanize.h"
 #include "engine/MpeRenderer.h"
 
 #include <cmath>
@@ -25,6 +26,7 @@ constexpr const char* gate = "gate";
 constexpr const char* swing = "swing";
 constexpr const char* baseOct = "baseOct";
 constexpr const char* range = "range";
+constexpr const char* humanize = "humanize";
 // voicing
 constexpr const char* vMode = "vMode";
 constexpr const char* voices = "voices";
@@ -107,6 +109,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout DarkMPEProcessor::createLayo
     flt (ids::swing, "Swing", 0.0f, 1.0f, 0.0f);
     integer (ids::baseOct, "Octave Base", 1, 5, 3);
     integer (ids::range, "Range", 1, 3, 2);
+    flt (ids::humanize, "Humanize", 0.0f, 1.0f, 0.0f);
 
     choice (ids::vMode, "Voicing", names (voicingNames, (int) VoicingMode::count), 2);
     integer (ids::voices, "Voices", 1, 6, 4);
@@ -368,6 +371,9 @@ void DarkMPEProcessor::rebuild()
         main = applyVoicing (source, readVoicingParams());
     else
         main = generateMelody (readGenParams());
+
+    if (getMode() != Mode::cinematic)
+        dmpe::humanize (main, pf (ids::humanize), getSeed());
 
     r->lengthBeats = main.lengthBeats;
     r->streams.push_back (makeStream (0, std::move (main), readExprParams()));

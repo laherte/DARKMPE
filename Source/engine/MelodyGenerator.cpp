@@ -19,6 +19,7 @@ struct StyleDef
     bool octaveOnOffbeats;
     std::vector<int> pool;        // candidate offsets in scale steps from the chord root
     std::vector<int> weights;
+    std::vector<int> fixedRhythm; // steps of a fixed rhythm (instead of a euclidean one)
 };
 
 const StyleDef& styleDef (Style s)
@@ -39,6 +40,12 @@ const StyleDef& styleDef (Style s)
         // acid slide: syncopated, glides everywhere
         { { 0, 0, 5, 1 }, 8, 12, 0.0f, 0.1f, 0.35f, 0.15f, false, false, false,
           { 0, 1, 2, 4, 6, 7, -2 }, { 3, 2, 2, 2, 1, 2, 1 } },
+        // gallop: i i bVI bVII, 8th + two 16ths on every beat, mostly the root
+        { { 0, 0, 5, 6 }, 12, 12, 0.3f, 0.1f, -0.1f, -0.2f, false, false, false,
+          { 0, 4, 7, 2, -2 }, { 6, 2, 2, 1, 1 }, { 0, 2, 3, 4, 6, 7, 8, 10, 11, 12, 14, 15 } },
+        // rave stab: i VI iv v, sparse syncopated hits, octaves on the offbeats
+        { { 0, 5, 3, 4 }, 5, 8, -0.1f, 0.3f, -0.15f, -0.35f, false, false, true,
+          { 0, 4, 7, 2, 1 }, { 4, 3, 2, 1, 1 } },
     };
     return defs[(size_t) s];
 }
@@ -88,6 +95,11 @@ struct MotifEvent
 
 } // namespace
 
+const std::vector<int>& styleProgression (Style s)
+{
+    return styleDef (s).progression;
+}
+
 Phrase generateMelody (const GenParams& p)
 {
     const auto& def = styleDef (p.style);
@@ -100,6 +112,13 @@ Phrase generateMelody (const GenParams& p)
     // ---- rhythm
     const int pulses = std::clamp ((int) std::lround (def.minPulses + (def.maxPulses - def.minPulses) * p.density), 1, 16);
     auto pattern = euclid (pulses, 16, rng.range (0, 3));
+    if (! def.fixedRhythm.empty())
+    {
+        // Fixed rhythm; low density thins out the off-beat 16ths.
+        std::fill (pattern.begin(), pattern.end(), false);
+        for (int step : def.fixedRhythm)
+            pattern[(size_t) step] = step % 4 == 0 || ! rng.chance ((1.0f - p.density) * 0.6f);
+    }
     pattern[0] = true; // the downbeat always speaks
 
     // ---- motif (one bar)
@@ -177,7 +196,7 @@ Phrase generateMelody (const GenParams& p)
             if (responseBar && e.step >= 12 && varRng.chance (0.3f))
                 e.octave += 1; // lift at the end of the phrase
 
-            int pitch = scales::degreeToPitch (tonic, p.scale, root + e.offset) + 12 * e.octave;
+            int pitch = scales::degreeToPitch (tonic, p.scale, scales::mapDegree (p.scale, root + e.offset)) + 12 * e.octave;
             while (pitch > highest) pitch -= 12;
             while (pitch < lowest)  pitch += 12;
 

@@ -18,6 +18,7 @@ set(ENGINE_SOURCES
     Source/engine/VoicingEngine.cpp
     Source/engine/CinematicEngine.cpp
     Source/engine/HarmonyEngine.cpp
+    Source/engine/Humanize.cpp
     Source/engine/ExpressionShaper.cpp
     Source/engine/MpeRenderer.cpp
     Source/engine/MidiFileIO.cpp)

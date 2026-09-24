@@ -45,9 +45,9 @@ const std::vector<ChordDef>& fixedProgression (Progression p)
 // Triad on a scale degree (stacked scale thirds), as a chord relative to the tonic.
 ChordDef diatonicTriad (scales::Scale s, int degree)
 {
-    const int root = scales::degreeToPitch (0, s, degree);
-    return { mod (root, 12),
-             { 0, scales::degreeToPitch (0, s, degree + 2) - root, scales::degreeToPitch (0, s, degree + 4) - root } };
+    const auto at = [s] (int d) { return scales::degreeToPitch (0, s, scales::mapDegree (s, d)); };
+    const int root = at (degree);
+    return { mod (root, 12), { 0, at (degree + 2) - root, at (degree + 4) - root } };
 }
 
 template <typename T>
@@ -73,8 +73,7 @@ std::vector<ChordDef> autoProgression (const HarmonyParams& p, int count)
     Rng rng ((uint64_t) p.seed * 7727ull + 11ull);
 
     std::vector<ChordDef> diatonic;
-    const int degrees = (int) scales::intervals (p.scale).size();
-    for (int d = 1; d < degrees; ++d)
+    for (int d = 1; d < 7; ++d)
     {
         auto c = diatonicTriad (p.scale, d);
         if (c.iv[2] == 7 || c.iv[2] == 6) // keep real triads (pentatonic stacks can be odd)

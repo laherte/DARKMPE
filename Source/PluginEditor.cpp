@@ -201,7 +201,7 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     choice (genControls, "bars", "Bars");
     for (auto [id, label] : { std::pair { "density", "Density" }, { "pedal", "Pedal" }, { "octave", "Octave" },
                               { "chroma", "Chroma" }, { "slide", "Slide" }, { "gate", "Gate" }, { "swing", "Swing" },
-                              { "baseOct", "Oct Base" }, { "range", "Range" } })
+                              { "baseOct", "Oct Base" }, { "range", "Range" }, { "humanize", "Humanize" } })
         knob (genControls, id, label);
 
     choice (voiceControls, "vMode", "Voicing");
@@ -211,7 +211,7 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     toggle (voiceControls, "strumDown", "Strum Down");
     toggle (voiceControls, "keepExpr", "Keep Expr");
     for (auto [id, label] : { std::pair { "voices", "Voices" }, { "vLow", "Low Note" }, { "vHigh", "High Note" },
-                              { "strum", "Strum" }, { "slide", "Legato Glide" } })
+                              { "strum", "Strum" }, { "slide", "Legato Glide" }, { "humanize", "Humanize" } })
         knob (voiceControls, id, label);
 
     choice (cineControls, "cProg", "Progression");
