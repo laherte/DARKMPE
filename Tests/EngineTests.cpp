@@ -3,6 +3,7 @@
 #include "engine/CinematicEngine.h"
 #include "engine/HarmonyEngine.h"
 #include "engine/Humanize.h"
+#include "engine/KitGenerator.h"
 #include "engine/ExpressionShaper.h"
 #include "engine/MelodyGenerator.h"
 #include "engine/MidiFileIO.h"
@@ -822,6 +823,95 @@ public:
 
 static HarmonyTests harmonyTests;
 
+class KitTests : public juce::UnitTest
+{
+public:
+    KitTests() : juce::UnitTest ("DarkMPE kit") {}
+
+    void runTest() override
+    {
+        beginTest ("Every layer and pattern: in the loop, deterministic, valid MPE");
+        {
+            const int patternCounts[] = { 1, (int) BassPattern::count, (int) ArpPattern::count, (int) SirenPattern::count, (int) StabPattern::count, 1 };
+            for (int style = 0; style < (int) Style::count; ++style)
+                for (int pat = 0; pat < 4; ++pat)
+                    for (float density : { 0.0f, 1.0f })
+                    {
+                        KitParams kp;
+                        kp.gen.style = (Style) style;
+                        kp.gen.bars = 4;
+                        kp.gen.seed = 11 + style;
+                        for (int l = 0; l < numLayers; ++l)
+                        {
+                            kp.layers[(size_t) l].pattern = pat % patternCounts[l];
+                            kp.layers[(size_t) l].density = density;
+                        }
+                        const auto a = generateKit (kp), b = generateKit (kp);
+                        expectEquals ((int) a.size(), numLayers);
+                        for (size_t i = 0; i < a.size(); ++i)
+                        {
+                            const juce::String what = juce::String (styleNames[style]) + " / " + layerNames[(int) a[i].layer]
+                                                    + " pattern " + juce::String (pat) + " density " + juce::String (density);
+                            const auto& ph = a[i].phrase;
+                            expect (! ph.empty(), what + " is empty");
+                            expectEquals (ph.lengthBeats, 16.0);
+                            expectEquals ((int) ph.notes.size(), (int) b[i].phrase.notes.size(), what + " not deterministic");
+                            for (const auto& n : ph.notes)
+                                expect (n.start >= 0.0 && n.end() <= ph.lengthBeats + 1.0e-6, what + " note outside the loop");
+                            expectLessOrEqual (maxPolyphony (ph), 15, what);
+
+                            auto shaped = ph;
+                            shapeExpression (shaped, {});
+                            juce::String why;
+                            expect (channelsAreExclusive (renderMpe (shaped), why), what + ": " + why);
+                        }
+                    }
+        }
+
+        beginTest ("Registers, scale, stabs on the lead's accents, moving siren");
+        {
+            KitParams kp;
+            kp.gen.bars = 8;
+            kp.layers[(size_t) Layer::stab].pattern = (int) StabPattern::accents;
+            const auto parts = generateKit (kp);
+            auto part = [&] (Layer l) -> const Phrase& { for (const auto& p : parts) if (p.layer == l) return p.phrase; return parts.front().phrase; };
+
+            for (const auto& n : part (Layer::bass).notes)
+            {
+                expectLessThan (n.pitch, 60, "bass too high");
+                expect (scales::inScale (n.pitch, kp.gen.key, kp.gen.scale), "bass out of scale");
+            }
+            for (const auto& n : part (Layer::arp).notes)
+            {
+                expect (n.pitch >= 48 && n.pitch <= 100, "arp register");
+                expect (scales::inScale (n.pitch, kp.gen.key, kp.gen.scale), "arp out of scale");
+            }
+
+            std::set<double> accents;
+            for (const auto& n : part (Layer::lead).notes)
+                if (n.accent)
+                    accents.insert (std::round (n.start * 4.0) / 4.0);
+            for (const auto& n : part (Layer::stab).notes)
+                expect (accents.count (n.start) != 0, "stab not on a lead accent: " + juce::String (n.start));
+
+            float sirenMove = 0.0f;
+            for (const auto& n : part (Layer::siren).notes)
+                for (const auto& pt : n.bend)
+                    sirenMove = std::max (sirenMove, std::abs (pt.v));
+            expectGreaterThan (sirenMove, 2.0f, "the siren must bend");
+
+            for (const auto& n : part (Layer::pad).notes)
+                expect (n.lockedExpr);
+
+            kp.layers[(size_t) Layer::arp].on = false;
+            kp.layers[(size_t) Layer::siren].on = false;
+            expectEquals ((int) generateKit (kp).size(), numLayers - 2);
+        }
+    }
+};
+
+static KitTests kitTests;
+
 // Pitch-bend steps of the note `pitch` between its note-on and `window` beats later (semitones, range 48).
 struct GlideStats { int bends = 0; float maxStep = 0.0f; float last = 0.0f; };
 GlideStats glideStats (const juce::MidiMessageSequence& seq, int pitch, double window)
@@ -1065,7 +1155,7 @@ int main (int argc, char** argv)
 
     juce::UnitTestRunner runner;
     runner.setAssertOnFailure (false);
-    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &harmonyTests, &renderTests });
+    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &harmonyTests, &kitTests, &renderTests });
 
     int failures = 0;
     for (int i = 0; i < runner.getNumResults(); ++i)

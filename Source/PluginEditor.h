@@ -64,6 +64,26 @@ public:
         bool dragging = false;
     };
 
+    // One KIT layer: focus (name), on, pattern, density, octave, mono.
+    struct LayerRow : juce::Component
+    {
+        LayerRow (DarkMPEProcessor& p, int layer, const char* onId, const char* patternId, const char* densityId,
+                  const char* octaveId, const char* monoId, const juce::String& note);
+        void resized() override;
+        void paint (juce::Graphics&) override;
+
+        DarkMPEProcessor& proc;
+        const int layer;
+        juce::TextButton name, on { "ON" }, mono { "MONO" };
+        juce::ComboBox pattern;
+        juce::Slider density { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+        juce::Slider octave { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+        juce::Label note;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> onAttachment, monoAttachment;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> patternAttachment;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> densityAttachment, octaveAttachment;
+    };
+
     // The scaled surface holding every control.
     struct Content : juce::Component
     {
@@ -93,7 +113,7 @@ private:
     theme::LookAndFeel lnf;
     Content content { *this };
 
-    juce::TextButton genTab { "GENERATE" }, xformTab { "TRANSFORM" }, cineTab { "CINEMATIC" };
+    juce::TextButton genTab { "GENERATE" }, xformTab { "TRANSFORM" }, cineTab { "CINEMATIC" }, kitTab { "KIT" };
     juce::TextButton newBtn { "NEW" }, mutateBtn { "MUTATE" }, loadBtn { "LOAD MIDI" }, captureBtn { "CAPTURE" }, exportBtn { "EXPORT" };
     juce::TextButton scaleBtn { "100%" };
     juce::TextButton prevBtn, nextBtn, seedBtn, favBtn; // seed history and favourites
@@ -104,8 +124,9 @@ private:
     PianoRoll roll;
     MpeMonitor monitor;
 
-    ControlList genControls, voiceControls, cineControls, exprControls, outControls;
-    juce::Rectangle<int> modeArea, exprArea, outArea;
+    ControlList genControls, voiceControls, cineControls, exprControls, outControls, kitControls;
+    std::vector<std::unique_ptr<LayerRow>> layerRows;
+    juce::Rectangle<int> modeArea, exprArea, outArea, kitHeader;
 
     std::unique_ptr<juce::FileChooser> chooser;
     bool dropHover = false;

@@ -92,10 +92,14 @@ void PianoRoll::drawStatic (juce::Graphics& g)
 
     const auto& phrase = shown->focused().phrase;
     const double L = std::max (1.0, shown->lengthBeats);
+    const bool layered = shown->streams.size() > 1; // KIT: every layer, the focused one on top
 
     int lo = 127, hi = 0;
-    for (const auto& n : phrase.notes)
+    bool anyNote = false;
+    for (const auto& stream : shown->streams)
+    for (const auto& n : stream.phrase.notes)
     {
+        anyNote = true;
         lo = std::min (lo, n.pitch);
         hi = std::max (hi, n.pitch);
         if (n.glideFrom >= 0)
@@ -109,7 +113,7 @@ void PianoRoll::drawStatic (juce::Graphics& g)
             hi = std::max (hi, n.pitch + (int) std::ceil (pt.v));
         }
     }
-    if (phrase.notes.empty()) { lo = 48; hi = 72; }
+    if (! anyNote) { lo = 48; hi = 72; }
     lo -= 3;
     hi += 3;
     if (hi - lo < 24) { const int c = (hi + lo) / 2; lo = c - 12; hi = c + 12; }
@@ -147,35 +151,47 @@ void PianoRoll::drawStatic (juce::Graphics& g)
             g.drawVerticalLine ((int) xOf (b, *r), r->getY(), r->getBottom());
     }
 
-    // notes
+    // notes with their pitch-bend path
+    auto drawNotes = [&] (const dmpe::Phrase& ph, juce::Colour base, float alpha)
+    {
+        for (const auto& n : ph.notes)
+        {
+            const float x0 = xOf (n.start, roll), x1 = xOf (n.end(), roll);
+            const auto rect = juce::Rectangle<float> (x0, yOf ((float) n.pitch) - rowH * 0.5f, std::max (2.0f, x1 - x0), rowH).reduced (0.0f, 0.5f);
+            auto c = base.withMultipliedBrightness (0.55f + 0.45f * n.velocity);
+            if (n.chromatic && ! layered)
+                c = chrome();
+            g.setColour (c.withAlpha (0.85f * alpha));
+            g.fillRoundedRectangle (rect, 1.5f);
+            g.setColour (c.brighter (0.4f).withAlpha (alpha));
+            g.drawRoundedRectangle (rect, 1.5f, 0.8f);
+
+            if (n.bend.size() > 1)
+            {
+                juce::Path path;
+                bool started = false;
+                for (const auto& pt : n.bend)
+                {
+                    const float x = xOf (n.start + pt.t, roll);
+                    const float y = yOf ((float) n.pitch + pt.v);
+                    if (! started) { path.startNewSubPath (x, y); started = true; }
+                    else path.lineTo (x, y);
+                }
+                g.setColour ((layered ? base.brighter (0.5f) : juce::Colours::white).withAlpha (0.85f * alpha));
+                g.strokePath (path, juce::PathStrokeType (1.3f));
+            }
+        }
+    };
+
+    if (layered)
+        for (size_t i = 0; i < shown->streams.size(); ++i)
+            if ((int) i != shown->focus)
+                drawNotes (shown->streams[i].phrase, layerColour (shown->streams[i].layer), 0.4f);
+    drawNotes (phrase, layered ? layerColour (shown->focused().layer) : accent(), 1.0f);
+
+    // expression lanes of the focused stream
     for (const auto& n : phrase.notes)
     {
-        const float x0 = xOf (n.start, roll), x1 = xOf (n.end(), roll);
-        const auto rect = juce::Rectangle<float> (x0, yOf ((float) n.pitch) - rowH * 0.5f, std::max (2.0f, x1 - x0), rowH).reduced (0.0f, 0.5f);
-        auto c = accent().withMultipliedBrightness (0.55f + 0.45f * n.velocity);
-        if (n.chromatic)
-            c = chrome();
-        g.setColour (c.withAlpha (0.85f));
-        g.fillRoundedRectangle (rect, 1.5f);
-        g.setColour (c.brighter (0.4f));
-        g.drawRoundedRectangle (rect, 1.5f, 0.8f);
-
-        // bend path
-        if (n.bend.size() > 1)
-        {
-            juce::Path path;
-            bool started = false;
-            for (const auto& pt : n.bend)
-            {
-                const float x = xOf (n.start + pt.t, roll);
-                const float y = yOf ((float) n.pitch + pt.v);
-                if (! started) { path.startNewSubPath (x, y); started = true; }
-                else path.lineTo (x, y);
-            }
-            g.setColour (juce::Colours::white.withAlpha (0.85f));
-            g.strokePath (path, juce::PathStrokeType (1.3f));
-        }
-
         auto lane = [&] (const dmpe::Curve& curve, const juce::Rectangle<float>& r, juce::Colour col)
         {
             if (curve.size() < 2)

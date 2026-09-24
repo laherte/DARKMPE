@@ -75,6 +75,13 @@ constexpr const char* virtualOut = "virtualOut";
 constexpr const char* leadMono = "leadMono";
 constexpr const char* monoBend = "monoBend";
 constexpr const char* trigMode = "trigMode";
+// kit: per layer (Lead, Bass, Arp, Siren, Stab, Pad)
+constexpr const char* layerOn[] = { "kLead", "kBass", "kArp", "kSiren", "kStab", "kPad" };
+constexpr const char* layerPattern[] = { nullptr, "kBassPat", "kArpPat", "kSirenPat", "kStabPat", nullptr };
+constexpr const char* layerDensity[] = { nullptr, "kBassDen", "kArpDen", "kSirenDen", "kStabDen", nullptr };
+constexpr const char* layerOctave[] = { nullptr, "kBassOct", "kArpOct", "kSirenOct", "kStabOct", nullptr };
+constexpr const char* layerMono[] = { "leadMono", "kBassMono", "kArpMono", "kSirenMono", nullptr, nullptr };
+constexpr const char* kFocus = "kFocus";
 } // namespace ids
 
 static const int barChoices[] = { 1, 2, 4, 8 };
@@ -97,7 +104,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout DarkMPEProcessor::createLayo
 
     auto names = [] (const char* const* arr, int n) { StringArray s; for (int i = 0; i < n; ++i) s.add (arr[i]); return s; };
 
-    choice (ids::mode, "Mode", { "Generate", "Transform", "Cinematic" }, 0);
+    choice (ids::mode, "Mode", { "Generate", "Transform", "Cinematic", "Kit" }, 0);
 
     choice (ids::key, "Key", names (scales::keyNames, 12), 9);
     choice (ids::scale, "Scale", names (scales::scaleNames, (int) scales::Scale::count), 1);
@@ -162,6 +169,24 @@ juce::AudioProcessorValueTreeState::ParameterLayout DarkMPEProcessor::createLayo
     integer (ids::monoBend, "Mono Bend Range", 1, 48, 12);
     choice (ids::trigMode, "Key Trigger", { "Off", "Transpose", "Gate" }, 0);
 
+    const StringArray patternNames[] = { {}, names (bassPatternNames, (int) BassPattern::count), names (arpPatternNames, (int) ArpPattern::count),
+                                         names (sirenPatternNames, (int) SirenPattern::count), names (stabPatternNames, (int) StabPattern::count), {} };
+    const float densities[] = { 0.0f, 0.6f, 0.55f, 0.4f, 0.5f, 0.0f };
+    for (int k = 0; k < numLayers; ++k)
+    {
+        const String layer = String ("Kit ") + layerNames[k];
+        boolean (ids::layerOn[k], layer.toRawUTF8(), k != (int) Layer::siren);
+        if (ids::layerPattern[k] != nullptr)
+        {
+            choice (ids::layerPattern[k], (layer + " Pattern").toRawUTF8(), patternNames[k], 0);
+            flt (ids::layerDensity[k], (layer + " Density").toRawUTF8(), 0.0f, 1.0f, densities[k]);
+            integer (ids::layerOctave[k], (layer + " Octave").toRawUTF8(), -2, 2, 0);
+        }
+        if (ids::layerMono[k] != nullptr && k != (int) Layer::lead)
+            boolean (ids::layerMono[k], (layer + " Mono").toRawUTF8(), k == (int) Layer::bass);
+    }
+    choice (ids::kFocus, "Kit Focus", names (layerNames, numLayers), 0);
+
     return l;
 }
 
@@ -172,6 +197,7 @@ DarkMPEProcessor::DarkMPEProcessor()
       apvts (*this, nullptr, "DarkMPE", createLayout())
 {
     const int instance = ++instanceCounter;
+    instanceNumber = instance;
     portName = instance == 1 ? juce::String ("DarkMPE Out") : "DarkMPE Out " + juce::String (instance);
 
     apvts.state.setProperty ("seed", juce::Random::getSystemRandom().nextInt (100000), nullptr);
@@ -195,9 +221,36 @@ DarkMPEProcessor::~DarkMPEProcessor()
     cancelPendingUpdate();
 }
 
+juce::String DarkMPEProcessor::getLayerPortName (int layer) const
+{
+    if (layer <= 0)
+        return portName;
+    return "DarkMPE " + juce::String (layerNames[juce::jlimit (0, numLayers - 1, layer)])
+         + (instanceNumber > 1 ? " " + juce::String (instanceNumber) : juce::String());
+}
+
 void DarkMPEProcessor::updatePorts()
 {
-    ports.setOpen (0, portName, portAllowed.load() && pb (ids::virtualOut));
+    const bool allowed = portAllowed.load() && pb (ids::virtualOut);
+    ports.setOpen (0, portName, allowed);
+
+    // KIT layers get their own port ("DarkMPE Bass", ...) once used; they stay so Live keeps its routing.
+    for (int l = 1; l < numLayers; ++l)
+    {
+        if (! allowed)
+            layerPortWanted[(size_t) l] = false;
+        else if (getMode() == Mode::kit && pb (ids::layerOn[l]))
+            layerPortWanted[(size_t) l] = true;
+        ports.setOpen (l, getLayerPortName (l), layerPortWanted[(size_t) l]);
+    }
+}
+
+int DarkMPEProcessor::getFocusLayer() const { return pi (ids::kFocus); }
+
+void DarkMPEProcessor::setFocusLayer (int layer)
+{
+    if (auto* p = apvts.getParameter (ids::kFocus))
+        p->setValueNotifyingHost (p->convertTo0to1 ((float) juce::jlimit (0, numLayers - 1, layer)));
 }
 
 bool DarkMPEProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -307,6 +360,25 @@ CineParams DarkMPEProcessor::readCineParams() const
     return c;
 }
 
+KitParams DarkMPEProcessor::readKitParams() const
+{
+    KitParams k;
+    k.gen = readGenParams();
+    k.pad = readCineParams();
+    for (int l = 0; l < numLayers; ++l)
+    {
+        auto& lp = k.layers[(size_t) l];
+        lp.on = pb (ids::layerOn[l]);
+        if (ids::layerPattern[l] != nullptr)
+        {
+            lp.pattern = pi (ids::layerPattern[l]);
+            lp.density = pf (ids::layerDensity[l]);
+            lp.octave = pi (ids::layerOctave[l]);
+        }
+    }
+    return k;
+}
+
 HarmonyParams DarkMPEProcessor::readHarmonyParams() const
 {
     HarmonyParams h;
@@ -323,7 +395,7 @@ HarmonyParams DarkMPEProcessor::readHarmonyParams() const
 DarkMPEProcessor::Mode DarkMPEProcessor::getMode() const
 {
     const int m = pi (ids::mode);
-    return m == 2 ? Mode::cinematic : (m == 1 ? Mode::transform : Mode::generate);
+    return m == 3 ? Mode::kit : (m == 2 ? Mode::cinematic : (m == 1 ? Mode::transform : Mode::generate));
 }
 
 void DarkMPEProcessor::setMode (Mode m)
@@ -362,6 +434,36 @@ Stream DarkMPEProcessor::makeStream (int layer, Phrase phrase, const ExprParams&
     return s;
 }
 
+void DarkMPEProcessor::buildKit (Rendered& r)
+{
+    const auto kp = readKitParams();
+    const auto expr = readExprParams();
+    const int focus = pi (ids::kFocus);
+    r.lengthBeats = std::clamp (kp.gen.bars, 1, 16) * 4.0;
+
+    for (auto& part : generateKit (kp))
+    {
+        const int l = (int) part.layer;
+        if (part.layer == Layer::lead || part.layer == Layer::bass || part.layer == Layer::arp)
+            dmpe::humanize (part.phrase, pf (ids::humanize), getSeed() + l);
+        const bool mono = ids::layerMono[l] != nullptr && pb (ids::layerMono[l]);
+        if (l == focus)
+            r.focus = (int) r.streams.size();
+        r.streams.push_back (makeStream (l, std::move (part.phrase), expr, mono));
+    }
+
+    if (r.streams.empty()) // every layer off: an empty loop
+    {
+        Phrase silence;
+        silence.lengthBeats = r.lengthBeats;
+        r.streams.push_back (makeStream (0, silence, expr, false));
+    }
+
+    const auto chords = kitChords (kp.gen);
+    for (size_t i = 0; i < chords.size() && i < 16; ++i)
+        harmonyText << (i > 0 ? "  " : "") << chordSymbol (chords[i]);
+}
+
 void DarkMPEProcessor::rebuild()
 {
     updatePorts();
@@ -370,7 +472,9 @@ void DarkMPEProcessor::rebuild()
 
     Phrase main;
     harmonyText = {};
-    if (getMode() == Mode::cinematic)
+    if (getMode() == Mode::kit)
+        buildKit (*r);
+    else if (getMode() == Mode::cinematic)
     {
         std::vector<Region> used;
         if (source.empty())
@@ -389,12 +493,15 @@ void DarkMPEProcessor::rebuild()
     else
         main = generateMelody (readGenParams());
 
-    if (getMode() != Mode::cinematic)
-        dmpe::humanize (main, pf (ids::humanize), getSeed());
+    if (getMode() != Mode::kit)
+    {
+        if (getMode() != Mode::cinematic)
+            dmpe::humanize (main, pf (ids::humanize), getSeed());
 
-    r->lengthBeats = main.lengthBeats;
-    const bool mono = getMode() == Mode::generate && pb (ids::leadMono);
-    r->streams.push_back (makeStream (0, std::move (main), readExprParams(), mono));
+        r->lengthBeats = main.lengthBeats;
+        const bool mono = getMode() == Mode::generate && pb (ids::leadMono);
+        r->streams.push_back (makeStream (0, std::move (main), readExprParams(), mono));
+    }
 
     {
         const juce::SpinLock::ScopedLockType sl (renderLock);
@@ -607,6 +714,10 @@ void DarkMPEProcessor::finishCapture()
 // ------------------------------------------------------------------ export
 juce::String DarkMPEProcessor::suggestedFileName() const
 {
+    if (getMode() == Mode::kit)
+        return "DarkMPE Kit " + juce::String (styleNames[pi (ids::style)]) + " " + scales::keyNames[pi (ids::key)]
+             + " " + juce::String (getSeed());
+
     if (getMode() == Mode::cinematic)
         return "DarkMPE Cinematic "
              + (source.empty() ? juce::String (scales::keyNames[pi (ids::key)]) + " " + progressionNames[pi (ids::cProg)] : sourceName)
@@ -619,27 +730,55 @@ juce::String DarkMPEProcessor::suggestedFileName() const
          + " " + juce::String ((int) apvts.state.getProperty ("seed", 0));
 }
 
+juce::MidiFile DarkMPEProcessor::streamFile (const Stream& stream) const
+{
+    RenderOptions ro;
+    ro.pitchBendRange = pi (ids::pbRange);
+    ro.includeZoneConfig = true;
+    const auto seq = stream.mono ? renderMono (stream.phrase, pi (ids::monoBend), true) : renderMpe (stream.phrase, ro);
+    const auto name = getMode() == Mode::kit ? suggestedFileName() + " " + layerNames[stream.layer] : suggestedFileName();
+    return makeMidiFile (seq, lastBpm.load(), name);
+}
+
 juce::File DarkMPEProcessor::writeMidiFile (const juce::File& target) const
 {
     auto r = getRendered();
     if (r == nullptr)
         return {};
-
-    const auto& stream = r->focused();
-    RenderOptions ro;
-    ro.pitchBendRange = pi (ids::pbRange);
-    ro.includeZoneConfig = true;
-    const auto seq = stream.mono ? renderMono (stream.phrase, pi (ids::monoBend), true) : renderMpe (stream.phrase, ro);
-    const auto mf = makeMidiFile (seq, lastBpm.load(), suggestedFileName());
-    return dmpe::writeMidiFile (mf, target) ? target : juce::File();
+    return dmpe::writeMidiFile (streamFile (r->focused()), target) ? target : juce::File();
 }
 
-juce::File DarkMPEProcessor::writeTempMidiForDrag() const
+juce::Array<juce::File> DarkMPEProcessor::writeAllStreams (const juce::File& target) const
+{
+    juce::Array<juce::File> written;
+    auto r = getRendered();
+    if (r == nullptr)
+        return written;
+
+    if (r->streams.size() == 1)
+    {
+        if (dmpe::writeMidiFile (streamFile (r->streams.front()), target))
+            written.add (target);
+        return written;
+    }
+
+    for (const auto& s : r->streams)
+    {
+        const auto file = target.getSiblingFile (target.getFileNameWithoutExtension() + " - " + layerNames[s.layer] + ".mid");
+        if (dmpe::writeMidiFile (streamFile (s), file))
+            written.add (file);
+    }
+    return written;
+}
+
+juce::StringArray DarkMPEProcessor::writeTempMidiForDrag() const
 {
     auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("DarkMPE");
     dir.createDirectory();
-    const auto name = juce::File::createLegalFileName (suggestedFileName()) + ".mid";
-    return writeMidiFile (dir.getChildFile (name));
+    juce::StringArray paths;
+    for (const auto& f : writeAllStreams (dir.getChildFile (juce::File::createLegalFileName (suggestedFileName()) + ".mid")))
+        paths.add (f.getFullPathName());
+    return paths;
 }
 
 // ------------------------------------------------------------------ audio

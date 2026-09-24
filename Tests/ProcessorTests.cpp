@@ -355,6 +355,62 @@ public:
             expectEquals (hangingNotes (cineEvents), 0, "transpose change left notes on");
         }
 
+        beginTest ("KIT: a stream per layer, host out follows the focus, export writes every layer");
+        {
+            DarkMPEProcessor proc;
+            setParam (proc, "virtualOut", 0.0f);
+            setParam (proc, "mode", 3.0f);
+            setParam (proc, "kSiren", 1.0f);
+            setParam (proc, "kFocus", 5.0f); // Pad
+            setParam (proc, "preview", 1.0f);
+            proc.refreshNow();
+            auto r = proc.getRendered();
+            expectEquals ((int) r->streams.size(), 6);
+            expectEquals (r->focused().layer, 5);
+            proc.prepareToPlay (48000.0, blockSize);
+            long long clock = 0;
+            auto events = run (proc, blocksFor8Bars / 2, blockSize, clock);
+            checkMpe (events, "kit pad", 3);
+
+            // Bass is mono by default: with the focus on it the host gets channel 1.
+            setParam (proc, "kFocus", 1.0f);
+            proc.refreshNow();
+            const auto bass = run (proc, blocksFor8Bars / 2, blockSize, clock);
+            int bassNotes = 0;
+            for (const auto& e : bass)
+                if (e.msg.isNoteOn())
+                {
+                    ++bassNotes;
+                    expectEquals (e.msg.getChannel(), 1, "mono bass must be on channel 1");
+                }
+            expectGreaterThan (bassNotes, 8);
+            events.insert (events.end(), bass.begin(), bass.end());
+            setParam (proc, "preview", 0.0f);
+            const auto stop = run (proc, 2, blockSize, clock);
+            events.insert (events.end(), stop.begin(), stop.end());
+            expectEquals (hangingNotes (events), 0, "switching the focus left notes on");
+
+            const auto dir = juce::File::createTempFile ("dmpe-kit");
+            dir.createDirectory();
+            const auto files = proc.writeAllStreams (dir.getChildFile ("Kit.mid"));
+            expectEquals (files.size(), 6);
+            for (const auto& f : files)
+            {
+                dmpe::Phrase p;
+                juce::String err;
+                expect (dmpe::loadMidiFile (f, p, err) && ! p.empty(), f.getFileName() + ": " + err);
+            }
+            dir.deleteRecursively();
+
+            setParam (proc, "preview", 1.0f);
+            proc.prepareToPlay (48000.0, 64);
+            const auto [allocs, us] = measure (proc, 6000, 64);
+            std::cout << "    kit (6 layers): " << juce::String (us, 2) << " us/block, allocations: " << allocs << std::endl;
+           #if DARKMPE_COUNTS_ALLOCATIONS
+            expectEquals ((int) allocs, 0, "kit processBlock allocated memory");
+           #endif
+        }
+
         beginTest ("Seed history and favourites survive the saved state");
         {
             auto notesOf = [] (DarkMPEProcessor& p)
@@ -430,8 +486,8 @@ static ProcessorTests processorTests;
 static int snapshots (const juce::File& dir)
 {
     dir.createDirectory();
-    const char* modeNames[] = { "Generate", "Transform", "Cinematic" };
-    for (int mode = 0; mode < 3; ++mode)
+    const char* modeNames[] = { "Generate", "Transform", "Cinematic", "Kit" };
+    for (int mode = 0; mode < 4; ++mode)
         for (float scale : { 1.0f, 0.75f })
         {
             DarkMPEProcessor proc;
@@ -442,6 +498,8 @@ static int snapshots (const juce::File& dir)
                 proc.loadMidi (juce::File (DARKMPE_SOURCE_DIR).getChildFile ("Examples/Dark Chords Am.mid"), err);
             }
             setParam (proc, "mode", (float) mode);
+            setParam (proc, "kSiren", 1.0f);
+            setParam (proc, "kFocus", 1.0f);
             setParam (proc, "preview", 1.0f);
             proc.refreshNow();
             proc.prepareToPlay (48000.0, 512);

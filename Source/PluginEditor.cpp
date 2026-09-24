@@ -82,13 +82,13 @@ void DarkMPEEditor::DragOut::mouseDrag (const juce::MouseEvent& e)
         return;
 
     dragging = true;
-    const auto file = editor.proc.writeTempMidiForDrag();
-    if (file.existsAsFile())
+    const auto files = editor.proc.writeTempMidiForDrag();
+    if (! files.isEmpty())
     {
-        editor.setStatus ("Dragging " + file.getFileName()
-                          + "  -  Live imports .mid files WITHOUT MPE: for MPE clips in Live record from " + editor.proc.getPortName());
-        juce::DragAndDropContainer::performExternalDragDropOfFiles ({ file.getFullPathName() }, false, this,
-                                                                    [this] { dragging = false; });
+        editor.setStatus ((files.size() > 1 ? "Dragging " + juce::String (files.size()) + " layers (one track each)"
+                                            : "Dragging " + juce::File (files[0]).getFileName())
+                          + "  -  Live imports .mid files WITHOUT MPE: for MPE clips in Live record from the DarkMPE ports");
+        juce::DragAndDropContainer::performExternalDragDropOfFiles (files, false, this, [this] { dragging = false; });
     }
     else
     {
@@ -108,11 +108,12 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     addAndMakeVisible (content);
     auto& s = proc.apvts;
 
-    for (auto* b : { &genTab, &xformTab, &cineTab })
+    for (auto* b : { &genTab, &xformTab, &cineTab, &kitTab })
     {
         b->setClickingTogglesState (false);
         content.addAndMakeVisible (*b);
     }
+    kitTab.onClick = [this] { proc.setMode (DarkMPEProcessor::Mode::kit); };
     genTab.onClick = [this] { proc.setMode (DarkMPEProcessor::Mode::generate); };
     xformTab.onClick = [this]
     {
@@ -125,7 +126,7 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     newBtn.onClick = [this]
     {
         proc.generateNew();
-        if (proc.getMode() != DarkMPEProcessor::Mode::cinematic)
+        if (proc.getMode() != DarkMPEProcessor::Mode::cinematic && proc.getMode() != DarkMPEProcessor::Mode::kit)
             setStatus ("New seed");
     };
     mutateBtn.onClick = [this] { proc.mutate(); setStatus ("Mutated the later bars"); };
@@ -163,7 +164,10 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
                                   if (f == juce::File())
                                       return;
                                   f = f.withFileExtension ("mid");
-                                  setStatus (proc.writeMidiFile (f).existsAsFile() ? "Exported " + f.getFileName() : "Export failed");
+                                  const auto written = proc.writeAllStreams (f);
+                                  setStatus (written.isEmpty() ? juce::String ("Export failed")
+                                             : written.size() == 1 ? "Exported " + written[0].getFileName()
+                                                                   : "Exported " + juce::String (written.size()) + " layers next to " + f.getFileName());
                               });
     };
     scaleBtn.onClick = [this] { showScaleMenu(); };
@@ -242,7 +246,20 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     knob (outControls, "pbRange", "MPE Bend");
     knob (outControls, "monoBend", "Mono Bend");
 
-    for (auto* list : { &genControls, &voiceControls, &cineControls, &exprControls, &outControls })
+    choice (kitControls, "style", "Style");
+    choice (kitControls, "key", "Key");
+    choice (kitControls, "scale", "Scale");
+    choice (kitControls, "bars", "Bars");
+    layerRows.push_back (std::make_unique<LayerRow> (proc, 0, "kLead", nullptr, nullptr, nullptr, "leadMono", "lead from GENERATE"));
+    layerRows.push_back (std::make_unique<LayerRow> (proc, 1, "kBass", "kBassPat", "kBassDen", "kBassOct", "kBassMono", ""));
+    layerRows.push_back (std::make_unique<LayerRow> (proc, 2, "kArp", "kArpPat", "kArpDen", "kArpOct", "kArpMono", ""));
+    layerRows.push_back (std::make_unique<LayerRow> (proc, 3, "kSiren", "kSirenPat", "kSirenDen", "kSirenOct", "kSirenMono", ""));
+    layerRows.push_back (std::make_unique<LayerRow> (proc, 4, "kStab", "kStabPat", "kStabDen", "kStabOct", nullptr, ""));
+    layerRows.push_back (std::make_unique<LayerRow> (proc, 5, "kPad", "cMotion", nullptr, nullptr, nullptr, "harmony from CINEMATIC"));
+    for (auto& row : layerRows)
+        content.addChildComponent (*row);
+
+    for (auto* list : { &genControls, &voiceControls, &cineControls, &exprControls, &outControls, &kitControls })
         for (auto& c : *list)
             content.addChildComponent (*c);
     for (auto* list : { &exprControls, &outControls })
@@ -252,8 +269,10 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     proc.onRebuilt = [this]
     {
         roll.refresh();
-        if (proc.getMode() == DarkMPEProcessor::Mode::cinematic)
+        if (proc.getMode() == DarkMPEProcessor::Mode::cinematic || proc.getMode() == DarkMPEProcessor::Mode::kit)
             showHarmony();
+        for (auto& row : layerRows)
+            row->repaint();
     };
 
     // Resizable as a whole, at a fixed aspect ratio; the scale is remembered with the plugin state
@@ -339,6 +358,13 @@ void DarkMPEEditor::showSeedMenu()
 
 void DarkMPEEditor::showHarmony()
 {
+    if (proc.getMode() == DarkMPEProcessor::Mode::kit)
+    {
+        const int focus = proc.getFocusLayer();
+        setStatus ("Kit:  " + proc.getHarmonyText() + "     focus " + dmpe::layerNames[focus] + " -> "
+                   + proc.getLayerPortName (focus) + (proc.isLayerPortOpen (focus) ? "" : " (port off)"));
+        return;
+    }
     setStatus ((proc.hasSource() ? proc.getSourceName() + ":  " : juce::String ("Harmony:  ")) + proc.getHarmonyText()
                + (proc.hasSource() ? juce::String() : "   (drop your own chords to transform them)"));
 }
@@ -348,17 +374,21 @@ void DarkMPEEditor::updateModeVisibility()
     shownMode = proc.getMode();
     const bool gen = shownMode == DarkMPEProcessor::Mode::generate;
     const bool cine = shownMode == DarkMPEProcessor::Mode::cinematic;
-    const bool xform = ! gen && ! cine;
+    const bool kit = shownMode == DarkMPEProcessor::Mode::kit;
+    const bool xform = shownMode == DarkMPEProcessor::Mode::transform;
     genTab.setToggleState (gen, juce::dontSendNotification);
     xformTab.setToggleState (xform, juce::dontSendNotification);
     cineTab.setToggleState (cine, juce::dontSendNotification);
+    kitTab.setToggleState (kit, juce::dontSendNotification);
     for (auto& c : genControls) c->setVisible (gen);
     for (auto& c : voiceControls) c->setVisible (xform);
     for (auto& c : cineControls) c->setVisible (cine);
-    mutateBtn.setEnabled (gen);
+    for (auto& c : kitControls) c->setVisible (kit);
+    for (auto& r : layerRows) r->setVisible (kit);
+    mutateBtn.setEnabled (gen || kit);
     if (xform && proc.hasSource())
         setStatus ("Source: " + proc.getSourceName() + "  -  " + proc.describeSource());
-    if (cine)
+    if (cine || kit)
         showHarmony();
     layoutContent();
     content.repaint();
@@ -425,7 +455,20 @@ void DarkMPEEditor::paintContent (juce::Graphics& g)
     };
     section (modeArea, shownMode == DarkMPEProcessor::Mode::generate    ? "LEAD GENERATOR"
                        : shownMode == DarkMPEProcessor::Mode::cinematic ? "CINEMATIC HARMONY"
+                       : shownMode == DarkMPEProcessor::Mode::kit       ? "KIT  -  ONE TRACK, SIX LAYERS"
                                                                         : "MPE VOICING");
+
+    if (shownMode == DarkMPEProcessor::Mode::kit && ! kitHeader.isEmpty())
+    {
+        g.setColour (textDim());
+        g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
+        int x = kitHeader.getX();
+        for (auto [title, w] : { std::pair { "LAYER", 74 }, { "", 46 }, { "PATTERN", 132 }, { "DENSITY", 150 }, { "OCTAVE", 110 }, { "OUT", 64 } })
+        {
+            g.drawText (title, x + 4, kitHeader.getY(), w, kitHeader.getHeight(), juce::Justification::centredLeft);
+            x += w + 6;
+        }
+    }
     section (exprArea, "MPE EXPRESSION");
     section (outArea, "OUTPUT");
 }
@@ -450,6 +493,7 @@ void DarkMPEEditor::layoutContent()
     header.removeFromLeft (178);
     for (auto* b : { &genTab, &xformTab, &cineTab })
         b->setBounds (header.removeFromLeft (100).reduced (2, 4));
+    kitTab.setBounds (header.removeFromLeft (64).reduced (2, 4));
     scaleBtn.setBounds (header.removeFromRight (58).reduced (2, 6));
     header.removeFromRight (12);
     favBtn.setBounds (header.removeFromRight (34).reduced (2, 6));
@@ -502,6 +546,90 @@ void DarkMPEEditor::layoutContent()
     flow (cineControls, inner (modeArea));
     flow (exprControls, inner (exprArea));
     flow (outControls, inner (outArea));
+
+    // KIT: shared choices, then one row per layer.
+    auto kitArea = inner (modeArea);
+    flow (kitControls, kitArea.removeFromTop (choiceH + 3));
+    kitHeader = kitArea.removeFromTop (14);
+    for (auto& row : layerRows)
+        row->setBounds (kitArea.removeFromTop (40).withTrimmedBottom (2));
+}
+
+// ------------------------------------------------------------------ KIT layer row
+DarkMPEEditor::LayerRow::LayerRow (DarkMPEProcessor& p, int l, const char* onId, const char* patternId, const char* densityId,
+                                   const char* octaveId, const char* monoId, const juce::String& text)
+    : proc (p), layer (l)
+{
+    auto& s = proc.apvts;
+    name.setButtonText (juce::String (dmpe::layerNames[layer]).toUpperCase());
+    name.setColour (juce::TextButton::textColourOffId, theme::layerColour (layer));
+    name.setTooltip ("Focus: shown in the roll, sent to the host MIDI out, dragged / exported first");
+    name.onClick = [this] { proc.setFocusLayer (layer); };
+    addAndMakeVisible (name);
+
+    on.setClickingTogglesState (true);
+    onAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (s, onId, on);
+    addAndMakeVisible (on);
+
+    if (patternId != nullptr)
+    {
+        if (auto* c = dynamic_cast<juce::AudioParameterChoice*> (s.getParameter (patternId)))
+            pattern.addItemList (c->choices, 1);
+        patternAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (s, patternId, pattern);
+        addAndMakeVisible (pattern);
+    }
+    for (auto [slider, id] : { std::pair { &density, densityId }, { &octave, octaveId } })
+    {
+        if (id == nullptr)
+            continue;
+        slider->setTextBoxStyle (juce::Slider::TextBoxRight, false, 34, 18);
+        slider->setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+        slider->setColour (juce::Slider::trackColourId, theme::layerColour (layer));
+        slider->setNumDecimalPlacesToDisplay (2);
+        addAndMakeVisible (*slider);
+    }
+    if (densityId != nullptr)
+        densityAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (s, densityId, density);
+    if (octaveId != nullptr)
+        octaveAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (s, octaveId, octave);
+    if (monoId != nullptr)
+    {
+        mono.setClickingTogglesState (true);
+        mono.setTooltip ("Mono: one line on channel 1 with channel pitch bend (synths without MPE)");
+        monoAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (s, monoId, mono);
+        addAndMakeVisible (mono);
+    }
+    note.setText (text, juce::dontSendNotification);
+    note.setFont (juce::FontOptions (10.0f));
+    note.setColour (juce::Label::textColourId, theme::textDim());
+    addAndMakeVisible (note);
+}
+
+void DarkMPEEditor::LayerRow::resized()
+{
+    auto r = getLocalBounds().reduced (0, 3);
+    auto take = [&] (int w) { auto a = r.removeFromLeft (w); r.removeFromLeft (6); return a; };
+    name.setBounds (take (74));
+    on.setBounds (take (46));
+    const auto patternArea = take (132);
+    const auto densityArea = take (150);
+    const auto octaveArea = take (110);
+    mono.setBounds (take (64));
+    pattern.setBounds (patternArea);
+    density.setBounds (densityArea);
+    octave.setBounds (octaveArea);
+    // The lead and the pad take their settings from other modes: say so where the controls would be.
+    note.setBounds (pattern.isVisible() ? densityArea.getUnion (octaveArea) : patternArea.getUnion (octaveArea));
+}
+
+void DarkMPEEditor::LayerRow::paint (juce::Graphics& g)
+{
+    if (proc.getFocusLayer() != layer)
+        return;
+    g.setColour (theme::layerColour (layer).withAlpha (0.12f));
+    g.fillRoundedRectangle (getLocalBounds().toFloat(), 3.0f);
+    g.setColour (theme::layerColour (layer));
+    g.fillRect (getLocalBounds().toFloat().withWidth (2.0f));
 }
 
 // ------------------------------------------------------------------ files

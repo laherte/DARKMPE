@@ -13,6 +13,13 @@ inline juce::Colour accent()      { return juce::Colour (0xffe0162b); }
 inline juce::Colour slideCol()    { return juce::Colour (0xff4fc3d9); }
 inline juce::Colour pressureCol() { return juce::Colour (0xffe8a33d); }
 
+// KIT layers: Lead, Bass, Arp, Siren, Stab, Pad
+inline juce::Colour layerColour (int layer)
+{
+    static const juce::uint32 cols[] = { 0xffe0162b, 0xff9b6bff, 0xff4fc3d9, 0xffe8a33d, 0xffd4d6dc, 0xffc2185b };
+    return juce::Colour (cols[(size_t) juce::jlimit (0, 5, layer)]);
+}
+
 class LookAndFeel : public juce::LookAndFeel_V4
 {
 public:

@@ -6,6 +6,7 @@
 #include "PortHub.h"
 #include "engine/CinematicEngine.h"
 #include "engine/ExpressionShaper.h"
+#include "engine/KitGenerator.h"
 #include "engine/MidiFileIO.h"
 #include "engine/MelodyGenerator.h"
 #include "engine/MpeRenderer.h"
@@ -43,7 +44,7 @@ class DarkMPEProcessor : public juce::AudioProcessor,
                          private juce::AsyncUpdater
 {
 public:
-    enum class Mode { generate, transform, cinematic };
+    enum class Mode { generate, transform, cinematic, kit };
 
     DarkMPEProcessor();
     ~DarkMPEProcessor() override;
@@ -101,8 +102,9 @@ public:
     void setCapturing (bool shouldCapture);
     bool isCapturing() const { return capturing.load(); }
 
-    juce::File writeMidiFile (const juce::File& target) const; // returns the written file or {}
-    juce::File writeTempMidiForDrag() const;
+    juce::File writeMidiFile (const juce::File& target) const; // the focused stream; returns the written file or {}
+    juce::Array<juce::File> writeAllStreams (const juce::File& target) const; // KIT: "<name> - <Layer>.mid" per layer
+    juce::StringArray writeTempMidiForDrag() const;             // one file, or one per KIT layer
     juce::String suggestedFileName() const;
 
     std::function<void()> onRebuilt; // called on the message thread after every rebuild
@@ -118,6 +120,10 @@ public:
     const ChannelMonitor& monitor (int channel) const { return mon[(size_t) juce::jlimit (1, 16, channel)]; }
 
     juce::String getPortName() const { return portName; }
+    juce::String getLayerPortName (int layer) const; // "DarkMPE Out" for the lead / main output
+    bool isLayerPortOpen (int layer) const { return ports.isOpen (layer); }
+    int getFocusLayer() const;
+    void setFocusLayer (int layer);
     int getTranspose() const { return transposeShown.load (std::memory_order_relaxed); } // Key Trigger, semitones
     bool isHostMono() const { return hostMono.load (std::memory_order_relaxed); } // host out is the mono (channel 1) line
     bool isPortOpen() const { return ports.isOpen (0); }
@@ -149,6 +155,9 @@ private:
     dmpe::ExprParams readExprParams() const;
     dmpe::CineParams readCineParams() const;
     dmpe::HarmonyParams readHarmonyParams() const;
+    dmpe::KitParams readKitParams() const;
+    void buildKit (Rendered& r);
+    juce::MidiFile streamFile (const Stream& s) const;
     float pf (const char* id) const;
     int pi (const char* id) const;
     bool pb (const char* id) const;
@@ -166,6 +175,8 @@ private:
     // ---- virtual MIDI ports ("DarkMPE Out" + KIT layers)
     PortHub ports;
     juce::String portName;
+    int instanceNumber = 1;
+    std::array<bool, PortHub::numPorts> layerPortWanted {}; // a KIT layer's port stays once it was used
     std::atomic<bool> portAllowed { false }; // only after prepareToPlay: never open ports during plugin scans
     std::array<ChannelMonitor, 17> mon;
 

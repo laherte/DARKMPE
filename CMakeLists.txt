@@ -19,6 +19,7 @@ set(ENGINE_SOURCES
     Source/engine/CinematicEngine.cpp
     Source/engine/HarmonyEngine.cpp
     Source/engine/Humanize.cpp
+    Source/engine/KitGenerator.cpp
     Source/engine/ExpressionShaper.cpp
     Source/engine/MpeRenderer.cpp
     Source/engine/MidiFileIO.cpp)
