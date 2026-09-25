@@ -23,8 +23,11 @@ void humanize (Phrase& phrase, float amount, int seed)
     Rng rng ((uint64_t) seed * 48271ull + 7ull);
     for (auto& n : phrase.notes)
     {
-        const float dv = rng.bipolar() * 0.15f * amount;
-        const double dt = rng.bipolar() * (1.0 / 64.0) * (double) amount;
+        // Notes with their own seed (phrase forms) are loosened the same way wherever their section comes back.
+        Rng own (mixSeed (n.exprSeed, 48271ull));
+        Rng& r = n.exprSeed != 0 ? own : rng;
+        const float dv = r.bipolar() * 0.15f * amount;
+        const double dt = r.bipolar() * (1.0 / 64.0) * (double) amount;
         if (n.lockedExpr)
             continue;
 

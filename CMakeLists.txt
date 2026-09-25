@@ -21,6 +21,7 @@ set(ENGINE_SOURCES
     Source/engine/Humanize.cpp
     Source/engine/KitGenerator.cpp
     Source/engine/ExpressionShaper.cpp
+    Source/engine/GestureEngine.cpp
     Source/engine/MpeRenderer.cpp
     Source/engine/MidiFileIO.cpp)
 
@@ -58,7 +59,8 @@ target_sources(DarkMPE PRIVATE
     Source/presets/Presets.cpp
     Source/PluginEditor.cpp
     Source/ui/PianoRoll.cpp
-    Source/ui/MpeMonitor.cpp)
+    Source/ui/MpeMonitor.cpp
+    Source/ui/ExprScope.cpp)
 
 target_include_directories(DarkMPE PRIVATE Source)
 
@@ -99,6 +101,7 @@ target_sources(DarkMPEProcessorTests PRIVATE
     Source/PluginEditor.cpp
     Source/ui/PianoRoll.cpp
     Source/ui/MpeMonitor.cpp
+    Source/ui/ExprScope.cpp
     Tests/ProcessorTests.cpp)
 target_include_directories(DarkMPEProcessorTests PRIVATE Source)
 target_compile_definitions(DarkMPEProcessorTests PRIVATE

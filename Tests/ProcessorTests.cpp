@@ -451,7 +451,7 @@ public:
             file.deleteFile();
         }
 
-        beginTest ("Form: section letters for the roll, in every generating mode");
+        beginTest ("Form: section letters for the roll, in the melodic modes only");
         {
             DarkMPEProcessor proc;
             setParam (proc, "virtualOut", 0.0f);
@@ -468,9 +468,9 @@ public:
             expectEquals (labels(), juce::String ("A@0 B@4 A@8 C@12"));
             setParam (proc, "mode", 3.0f);
             expectEquals (labels(), juce::String ("A@0 B@4 A@8 C@12"));
-            setParam (proc, "mode", 2.0f);
-            setParam (proc, "bars", 3.0f); // 8 bars of 1-bar chords: two chords per section
-            expectEquals (labels(), juce::String ("A@0 B@8 A@16 C@24"));
+            setParam (proc, "mode", 2.0f); // CINEMATIC: the form never touches the chords
+            expectEquals (labels(), juce::String());
+            setParam (proc, "mode", 0.0f);
             setParam (proc, "form", 0.0f);
             expectEquals (labels(), juce::String());
         }

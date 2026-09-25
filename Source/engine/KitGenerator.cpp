@@ -34,11 +34,37 @@ Rng layerRng (const GenParams& g, Layer l)
 // With a phrase form, the same section label gives the same random choices (A bars repeat exactly).
 Rng sectionRng (const GenParams& g, Layer l, const std::string& label, int bar, bool form)
 {
-    uint64_t h = 1469598103934665603ull;
-    for (char c : label)
-        h = (h ^ (uint64_t) (unsigned char) c) * 1099511628211ull;
-    const uint64_t salt = form ? h : (uint64_t) bar * 40503ull;
+    const uint64_t salt = form ? labelHash (label.c_str()) : (uint64_t) bar * 40503ull;
     return Rng ((uint64_t) g.seed * 2246822519ull + (uint64_t) l * 3266489917ull + (uint64_t) g.variation * 668265263ull + salt);
+}
+
+// Per-note seeds (Note::exprSeed): with a form the same (section, position) gives the same seed, so a repeated
+// section is humanized and gestured identically; statements ignore MUTATE.
+void seedNotes (Phrase& p, const GenParams& g, Layer l, const std::vector<Section>& sections)
+{
+    for (auto& n : p.notes)
+    {
+        const int bar = std::clamp ((int) std::floor (n.start / 4.0 + 1.0e-9), 0, 1 << 20);
+        const auto step = (uint64_t) std::lround ((n.start - bar * 4.0) * 64.0);
+        uint64_t s = mixSeed ((uint64_t) g.seed, (uint64_t) l * 977ull + 13ull);
+        if (sections.empty())
+            s = mixSeed (mixSeed (s, (uint64_t) g.variation), (uint64_t) bar * 4096ull + step);
+        else
+        {
+            const auto& sec = sections[(size_t) bar % sections.size()];
+            n.sectionKind = (int) sec.kind;
+            const uint64_t v = sec.kind == SectionKind::statement ? 0 : (uint64_t) g.variation;
+            s = mixSeed (mixSeed (s, labelHash (sec.label.c_str())), step * 131ull + v * 7919ull + (uint64_t) n.pitch);
+        }
+        n.exprSeed = s;
+    }
+}
+
+// The key's tonic in the octave nearest to `near`.
+int nearestTonic (const GenParams& g, int near)
+{
+    const int pc = scales::mod (g.key, 12);
+    return near - scales::mod (near - pc + 6, 12) + 6;
 }
 
 std::vector<bool> euclid (int pulses, int steps, int rotation)
@@ -135,18 +161,24 @@ Phrase bassLine (const GenParams& g, const LayerParams& lp)
                                                                    [b0] (const Note& n) { return n.start >= b0 + 3.0; }), out.notes.end()); };
             if (kind == SectionKind::close)
             {
-                // Cadence fill: the last beat walks up root, third, fifth, octave into the next bar.
+                // Cadence fill: the last beat walks by step from the chord root home to the key's tonic
+                // (from the tonic itself: up to the octave).
                 lastBeat();
-                static const int walk[] = { 0, 2, 4, 7 };
+                const int home = scales::mod (r, 7) == 0 ? r + 7 : 7 * (int) std::lround ((double) r / 7.0);
                 for (int k = 0; k < 4; ++k)
-                    out.notes.push_back (makeNote (b0 + 3.0 + k * 0.25, 0.2, pitchOf (g, tonic, r + walk[k]), 0.8f));
+                {
+                    const int deg = r + (int) std::lround ((double) k * (home - r) / 3.0);
+                    const int pitch = k == 3 ? nearestTonic (g, pitchOf (g, tonic, deg)) : pitchOf (g, tonic, deg);
+                    out.notes.push_back (makeNote (b0 + 3.0 + k * 0.25, 0.2, pitch, 0.8f));
+                }
             }
             else if (kind == SectionKind::answer || kind == SectionKind::closedAnswer)
             {
-                // The answer lifts: the last 8th jumps an octave.
+                // The answer lifts (the last 8th jumps an octave); the closed answer lands on the key's tonic.
                 out.notes.erase (std::remove_if (out.notes.begin() + (long) firstOfBar, out.notes.end(),
                                                  [b0] (const Note& n) { return n.start >= b0 + 3.5; }), out.notes.end());
-                out.notes.push_back (makeNote (b0 + 3.5, 0.36, root + 12, 0.84f));
+                const int last = kind == SectionKind::answer ? root + 12 : nearestTonic (g, root);
+                out.notes.push_back (makeNote (b0 + 3.5, 0.36, last, 0.84f));
             }
         }
     }
@@ -164,6 +196,7 @@ Phrase bassLine (const GenParams& g, const LayerParams& lp)
         }
     }
     clip (out);
+    seedNotes (out, g, Layer::bass, sections);
     return out;
 }
 
@@ -250,15 +283,21 @@ Phrase arpLine (const GenParams& g, const LayerParams& lp)
             }
         }
 
+        // Closing sections land on the key's tonic, whatever the chord.
+        const bool landHome = sec != nullptr && (sec->kind == SectionKind::close || sec->kind == SectionKind::closedAnswer);
         for (size_t i = 0; i < hits.size(); ++i)
         {
             const int s = hits[i].first;
             const bool last = i + 1 == hits.size();
+            int pitch = tones[(size_t) hits[i].second];
+            if (landHome && last)
+                pitch = nearestTonic (g, i > 0 ? out.notes.back().pitch : pitch);
             out.notes.push_back (makeNote (bar * 4.0 + s * 0.25, holdLast && last ? 4.0 - s * 0.25 - 0.02 : 0.14,
-                                           tones[(size_t) hits[i].second], s % 4 == 0 ? 0.84f : 0.7f));
+                                           pitch, s % 4 == 0 ? 0.84f : 0.7f));
         }
     }
     clip (out);
+    seedNotes (out, g, Layer::arp, sections);
     return out;
 }
 

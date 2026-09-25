@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "PluginProcessor.h"
+#include "ui/ExprScope.h"
 #include "ui/MpeMonitor.h"
 #include "ui/PianoRoll.h"
 #include "ui/Theme.h"
@@ -14,7 +15,7 @@ class DarkMPEEditor : public juce::AudioProcessorEditor,
 {
 public:
     // Everything is laid out at this size and scaled as a whole (60% .. 160%).
-    static constexpr int baseWidth = 1200, baseHeight = 780;
+    static constexpr int baseWidth = 1200, baseHeight = 860;
 
     explicit DarkMPEEditor (DarkMPEProcessor&);
     ~DarkMPEEditor() override;
@@ -108,6 +109,7 @@ private:
     void showSeedMenu();
     void showPresetMenu();
     void updateSeedControls();
+    void updateFormEnabled();
     void setScale (float scale);
 
     DarkMPEProcessor& proc;
@@ -126,6 +128,7 @@ private:
 
     PianoRoll roll;
     MpeMonitor monitor;
+    ExprScope scope;
 
     ControlList genControls, voiceControls, cineControls, exprControls, outControls, kitControls;
     std::vector<std::unique_ptr<LayerRow>> layerRows;

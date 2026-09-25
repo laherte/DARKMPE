@@ -5,6 +5,7 @@
 #include "engine/Humanize.h"
 #include "engine/KitGenerator.h"
 #include "engine/ExpressionShaper.h"
+#include "engine/GestureEngine.h"
 #include "engine/MelodyGenerator.h"
 #include "engine/MidiFileIO.h"
 #include "engine/MpeRenderer.h"
@@ -823,6 +824,123 @@ public:
 
 static HarmonyTests harmonyTests;
 
+class ChordTests : public juce::UnitTest
+{
+public:
+    ChordTests() : juce::UnitTest ("DarkMPE chords") {}
+
+    void runTest() override
+    {
+        beginTest ("Auto progression: tonic first, every phrase ends on a dominant, no chord twice in a row");
+        for (int seed = 1; seed <= 40; ++seed)
+            for (float darkness : { 0.0f, 0.5f, 1.0f })
+                for (auto len : { ChordLength::oneBar, ChordLength::twoBeats })
+                {
+                    HarmonyParams hp;
+                    hp.progression = Progression::autoSeed;
+                    hp.bars = 8;
+                    hp.chordLength = len;
+                    hp.seed = seed;
+                    hp.darkness = darkness;
+                    hp.scale = seed % 2 == 0 ? scales::Scale::naturalMinor : scales::Scale::phrygian;
+                    const auto rs = generateProgression (hp);
+                    const juce::String what = "seed " + juce::String (seed) + " darkness " + juce::String (darkness);
+                    expectEquals (juce::String (chordSymbol (rs.front())), juce::String ("Am"), what);
+
+                    // dominants of A minor: v / V (E), bVII (G), vii dim (G#), bII (Bb), #iv (D#), iii (C#)
+                    const std::set<int> dominants { 4, 7, 8, 10, 3, 1 };
+                    auto rootPc = [&] (const Region& r) { return scales::mod (r.pitches.front(), 12); };
+                    expect (dominants.count (rootPc (rs.back())) != 0, what + ": the loop must lead home, got " + chordSymbol (rs.back()));
+                    if (rs.size() >= 8)
+                        expect (dominants.count (rootPc (rs[rs.size() / 2 - 1])) != 0, what + ": half cadence");
+                    for (size_t i = 1; i < rs.size(); ++i)
+                        expect (rs[i].pitches != rs[i - 1].pitches || rs[i].bassPc != rs[i - 1].bassPc, what + ": repeated chord");
+                }
+
+        beginTest ("Colours belong to the chord: a chord that comes back keeps its colours");
+        {
+            HarmonyParams hp;
+            hp.progression = Progression::mediantChain; // i bvi i iii
+            auto rs = generateProgression (hp);
+            colourRegions (rs, 1.0f, 0.6f, 9);
+            expect (rs[0].pitches == rs[2].pitches, "both i chords must get the same colours");
+            expect (rs[0].pitches.size() > 3);
+        }
+
+        beginTest ("The loop comes round: every morphing voice arrives on its first note");
+        for (auto motion : { Motion::morph, Motion::counterline, Motion::ripple, Motion::shimmer })
+        {
+            HarmonyParams hp;
+            hp.progression = Progression::epicMinor;
+            CineParams cp;
+            cp.motion = motion;
+            cp.reharm = Reharm::off;
+            cp.stagger = 0.0f;
+            cp.voices = 4;
+            const auto out = cinematicRegions (generateProgression (hp), 16.0, cp, hp.key);
+            std::map<int, float> first, last;
+            for (const auto& n : out.notes)
+            {
+                if (n.start < 1.0e-9)
+                    first[n.voiceIndex] = (float) n.pitch + evalCurve (n.bend, 0.0, 0.0f);
+                if (n.end() > 16.0 - 1.0e-6)
+                    last[n.voiceIndex] = (float) n.pitch + evalCurve (n.bend, n.length - 0.004, 0.0f);
+            }
+            expectEquals ((int) first.size(), (int) last.size());
+            for (const auto& [k, pitch] : first)
+                expectWithinAbsoluteError (last[k], pitch, 0.35f, juce::String (motionNames[(int) motion]) + ": voice " + juce::String (k) + " must glide into the loop start");
+        }
+
+        beginTest ("Counterline sings, Ripple dips every voice, Shimmer spreads the voices");
+        {
+            HarmonyParams hp;
+            hp.progression = Progression::harmonicDominant;
+            CineParams cp;
+            cp.reharm = Reharm::off;
+            cp.voices = 5;
+            cp.stagger = 0.0f;
+            auto plain = cinematicRegions (generateProgression (hp), 16.0, cp, hp.key);
+            auto voiceAt = [] (const Phrase& ph, int k, double t)
+            {
+                for (const auto& n : ph.notes)
+                    if (n.voiceIndex == k && t >= n.start && t < n.end())
+                        return (float) n.pitch + evalCurve (n.bend, t - n.start, 0.0f);
+                return 0.0f;
+            };
+
+            cp.motion = Motion::counterline;
+            const auto counter = cinematicRegions (generateProgression (hp), 16.0, cp, hp.key);
+            std::set<int> offsets;
+            for (double t = 4.0; t < 8.0; t += 0.05)
+                offsets.insert ((int) std::lround (voiceAt (counter, 4, t) - voiceAt (plain, 4, t)));
+            expectGreaterOrEqual ((int) offsets.size(), 2, "the top voice must move by steps");
+
+            cp.motion = Motion::ripple;
+            const auto ripple = cinematicRegions (generateProgression (hp), 16.0, cp, hp.key);
+            for (int k = 0; k < 5; ++k)
+            {
+                float lowest = 0.0f;
+                for (double t = 0.0; t < 4.0; t += 0.02)
+                    lowest = std::min (lowest, voiceAt (ripple, k, t) - voiceAt (plain, k, t));
+                expect (lowest <= -0.9f && lowest >= -2.1f, "voice " + juce::String (k) + " must dip a scale step");
+            }
+
+            cp.motion = Motion::shimmer;
+            const auto shimmer = cinematicRegions (generateProgression (hp), 16.0, cp, hp.key);
+            float spreadTop = 0.0f, spreadBottom = 0.0f;
+            for (double t = 2.0; t < 3.2; t += 0.05)
+            {
+                spreadTop += voiceAt (shimmer, 4, t) - voiceAt (plain, 4, t);
+                spreadBottom += voiceAt (shimmer, 0, t) - voiceAt (plain, 0, t);
+            }
+            expectGreaterThan (spreadTop, 0.0f, "the top voice drifts up");
+            expectLessThan (spreadBottom, 0.0f, "the bottom voice drifts down");
+        }
+    }
+};
+
+static ChordTests chordTests;
+
 class KitTests : public juce::UnitTest
 {
 public:
@@ -926,6 +1044,22 @@ public:
                 v.push_back ({ std::lround ((n.start - b * 4.0) * 1000.0), n.pitch });
         return v;
     }
+    // The moving voice of one bar (pedal notes follow the chord, so they may differ between sections).
+    static std::vector<Note> melodicNotes (const Phrase& p, int b)
+    {
+        std::vector<Note> v;
+        for (const auto& n : p.notes)
+            if (! n.pedal && n.start >= b * 4.0 - 1.0e-9 && n.start < b * 4.0 + 4.0 - 1.0e-9)
+                v.push_back (n);
+        return v;
+    }
+    static std::vector<std::pair<long, int>> melodic (const Phrase& p, int b)
+    {
+        std::vector<std::pair<long, int>> v;
+        for (const auto& n : melodicNotes (p, b))
+            v.push_back ({ std::lround ((n.start - b * 4.0) * 1000.0), n.pitch });
+        return v;
+    }
     static std::vector<long> rhythm (const Phrase& p, int b)
     {
         std::vector<long> v;
@@ -948,31 +1082,101 @@ public:
             expect (formSections (Form::classic, 4).empty());
         }
 
-        beginTest ("A B A C: A comes back note for note, B answers, C closes on the root");
+        beginTest ("Every style: A comes back note for note, B ends on the fifth, C closes on the tonic");
+        for (int st = 0; st < (int) Style::count; ++st)
+            for (int sc : { (int) scales::Scale::phrygian, (int) scales::Scale::harmonicMinor, (int) scales::Scale::minorPentatonic })
+            {
+                GenParams gp;
+                gp.style = (Style) st;
+                gp.scale = (scales::Scale) sc;
+                gp.form = Form::abac;
+                gp.bars = 4;
+                gp.chroma = 0.3f; // chromatic approaches come back with A too
+                gp.seed = 99 + st;
+                const auto mel = generateMelody (gp);
+                const juce::String what = juce::String (styleNames[st]) + " / " + scales::scaleNames[sc];
+                expect (melodic (mel, 0) == melodic (mel, 2), what + ": A must repeat note for note (moving voice)");
+                expect (bar (mel, 1) != bar (mel, 3), what + ": B and C must differ");
+                expect (rhythm (mel, 0).front() == rhythm (mel, 1).front(), what + ": the answer starts like the call");
+
+                const auto& last = mel.notes.back();
+                expectEquals (scales::mod (last.pitch - gp.key, 12), 0, what + ": C must end on the key's tonic");
+                expect (mel.lengthBeats - last.end() < 0.05, what + ": the closing note is held");
+                expect (isMonophonic (mel), what);
+
+                // B lands open on the key's fifth.
+                const auto b = melodicNotes (mel, 1);
+                if (! b.empty())
+                {
+                    const int fifth = scales::degreeToPitch (0, gp.scale, scales::mapDegree (gp.scale, 4));
+                    expectEquals (scales::mod (b.back().pitch - gp.key, 12), scales::mod (fifth, 12), what + ": B must end on the fifth");
+                }
+
+                // MUTATE re-draws the answers, never A.
+                auto mutated = gp;
+                mutated.variation = 1;
+                const auto m2 = generateMelody (mutated);
+                expect (bar (m2, 0) == bar (mel, 0), what + ": MUTATE must keep A");
+                expect (bar (m2, 2) == bar (mel, 2), what + ": MUTATE must keep the return of A");
+            }
+
+        beginTest ("Period: B' closes on the tonic; repeated A has identical expression");
         {
             GenParams gp;
-            gp.style = Style::opr; // i - bII - i - bII: bars 1 and 3 share the chord
-            gp.form = Form::abac;
-            gp.bars = 4;
-            gp.chroma = 0.4f;
-            gp.seed = 99;
+            gp.form = Form::period;
+            gp.style = Style::pursuit;
+            gp.seed = 31;
+            gp.chroma = 0.0f;
+            auto mel = generateMelody (gp);
+            const auto closed = melodicNotes (mel, 3);
+            expect (! closed.empty());
+            if (! closed.empty())
+                expectEquals (scales::mod (closed.back().pitch - gp.key, 12), 0, "B' must end on the tonic");
+
+            humanize (mel, 1.0f, 5);
+            shapeExpression (mel, {});
+            const auto a0 = melodicNotes (mel, 0), a2 = melodicNotes (mel, 2);
+            expectEquals ((int) a0.size(), (int) a2.size());
+            bool same = a0.size() == a2.size();
+            for (size_t i = 0; same && i < a0.size(); ++i)
+            {
+                same = std::abs ((a0[i].start + 8.0) - a2[i].start) < 1.0e-9 && a0[i].velocity == a2[i].velocity;
+                // What comes before / after the section may tie into it differently: compare the untied notes.
+                if (a0[i].glideFrom != a2[i].glideFrom || std::abs (a0[i].length - a2[i].length) > 1.0e-9)
+                    continue;
+                same = same && a0[i].bend.size() == a2[i].bend.size();
+                for (size_t k = 0; same && k < a0[i].bend.size(); ++k)
+                    same = std::abs (a0[i].bend[k].v - a2[i].bend[k].v) < 1.0e-6f;
+            }
+            expect (same, "a repeated A must be humanized and shaped identically");
+        }
+
+        beginTest ("Sequence: A+ is A one scale step up, contour intact");
+        for (int st = 0; st < (int) Style::count; ++st)
+        {
+            GenParams gp;
+            gp.form = Form::sequence;
+            gp.style = (Style) st;
+            gp.chroma = 0.0f;
+            gp.seed = 400 + st;
             const auto mel = generateMelody (gp);
-            expect (bar (mel, 0) == bar (mel, 2), "A must repeat exactly (chromatic notes included)");
-            expect (bar (mel, 1) != bar (mel, 3), "B and C must differ");
-            expect (rhythm (mel, 0).front() == rhythm (mel, 1).front(), "the answer starts like the call");
-
-            const auto& prog = styleProgression (gp.style);
-            const int chordRoot = scales::mod (scales::degreeToPitch (gp.key, gp.scale, prog[3]), 12);
-            const auto& last = mel.notes.back();
-            expectEquals (scales::mod (last.pitch, 12), chordRoot, "C must end on the chord root");
-            expect (last.end() > 15.9 - 1.0e-6 || mel.lengthBeats - last.end() < 0.05, "the closing note is held");
-            expect (isMonophonic (mel));
-
-            // MUTATE re-draws the answers, never A.
-            auto mutated = gp;
-            mutated.variation = 1;
-            const auto m2 = generateMelody (mutated);
-            expect (bar (m2, 0) == bar (mel, 0), "MUTATE must keep A");
+            const auto a = melodic (mel, 0), up = melodic (mel, 1);
+            const juce::String what = styleNames[st];
+            expectEquals ((int) a.size(), (int) up.size(), what);
+            if (a.size() != up.size())
+                continue;
+            for (size_t i = 0; i < a.size(); ++i)
+            {
+                int next = a[i].second + 1;
+                while (! scales::inScale (next, gp.key, gp.scale))
+                    ++next;
+                expectEquals (scales::mod (up[i].second, 12), scales::mod (next, 12), what + ": every note one step up");
+            }
+            // The section moves as a whole: the intervals between the notes keep their direction.
+            int kept = 0;
+            for (size_t i = 1; i < a.size(); ++i)
+                kept += ((a[i].second > a[i - 1].second) == (up[i].second > up[i - 1].second)) ? 1 : 0;
+            expectGreaterOrEqual (kept, (int) a.size() - 2, what + ": contour");
         }
 
         beginTest ("A A A B and Sequence keep the rhythm of A");
@@ -1011,34 +1215,22 @@ public:
                 expect (isMonophonic (a), what + " must stay one line");
             }
 
-        beginTest ("Forms shape cinematic progressions");
+        beginTest ("Forms never change the chords");
         {
-            HarmonyParams hp;
-            hp.progression = Progression::epicMinor;
-            hp.form = Form::abac;
-            SectionMarks marks;
-            const auto abac = generateProgression (hp, &marks);
-            juce::String chords;
-            for (const auto& r : abac) chords << chordSymbol (r) << " ";
-            expectEquals (chords.trim(), juce::String ("Am F Am E7"));
-            expectEquals ((int) marks.size(), 4);
-
-            hp.form = Form::sequence;
-            hp.bars = 8;
-            chords = {};
-            for (const auto& r : generateProgression (hp)) chords << chordSymbol (r) << " ";
-            expectEquals (chords.trim(), juce::String ("Am F Bm G Cm G# Dm E7"));
-
-            for (int f = 0; f < (int) Form::count; ++f)
-                for (int prog = 0; prog < (int) Progression::count; ++prog)
+            KitParams kp;
+            kp.gen.style = Style::pursuit;
+            const auto classic = generateKit (kp);
+            kp.gen.form = Form::abac;
+            const auto abac = generateKit (kp);
+            for (size_t i = 0; i < classic.size(); ++i)
+                if (classic[i].layer == Layer::pad || classic[i].layer == Layer::stab)
                 {
-                    hp.form = (Form) f;
-                    hp.progression = (Progression) prog;
-                    hp.bars = 8;
-                    auto out = cinematicRegions (generateProgression (hp), 32.0, {}, hp.key);
-                    shapeExpression (out, {});
-                    juce::String why;
-                    expect (channelsAreExclusive (renderMpe (out), why), juce::String (formNames[f]) + " / " + progressionNames[prog] + ": " + why);
+                    const auto& x = classic[i].phrase.notes;
+                    const auto& y = abac[i].phrase.notes;
+                    bool same = x.size() == y.size();
+                    for (size_t k = 0; same && k < x.size(); ++k)
+                        same = x[k].pitch == y[k].pitch && std::abs (x[k].start - y[k].start) < 1.0e-9;
+                    expect (same, juce::String (layerNames[(int) classic[i].layer]) + " must not follow the form");
                 }
         }
 
@@ -1051,6 +1243,16 @@ public:
             for (const auto& part : parts)
                 if (part.layer == Layer::arp || part.layer == Layer::bass || part.layer == Layer::lead)
                     expect (bar (part.phrase, 0) == bar (part.phrase, 2), juce::String (layerNames[(int) part.layer]) + ": A bars must repeat");
+
+            // Whatever the chord of the last bar, bass and arp close on the key's tonic.
+            for (int st = 0; st < (int) Style::count; ++st)
+            {
+                kp.gen.style = (Style) st;
+                for (const auto& part : generateKit (kp))
+                    if (part.layer == Layer::arp || part.layer == Layer::bass)
+                        expectEquals (scales::mod (part.phrase.notes.back().pitch - kp.gen.key, 12), 0,
+                                      juce::String (styleNames[st]) + " / " + layerNames[(int) part.layer] + ": must close on the tonic");
+            }
         }
     }
 };
@@ -1208,6 +1410,372 @@ public:
 
 static RenderTests renderTests;
 
+class ExpressionTests : public juce::UnitTest
+{
+public:
+    ExpressionTests() : juce::UnitTest ("DarkMPE expression") {}
+
+    static Note single (double start, double length, int pitch, uint64_t seed)
+    {
+        Note n;
+        n.start = start;
+        n.length = length;
+        n.pitch = pitch;
+        n.exprSeed = seed;
+        return n;
+    }
+
+    void runTest() override
+    {
+        beginTest ("Vibrato: a 1-beat note sings at the set depth, 16ths don't");
+        {
+            Phrase p;
+            p.lengthBeats = 4.0;
+            p.notes = { single (0.0, 2.0, 60, 11), single (2.0, 1.0, 64, 13), single (3.0, 0.2, 62, 12) };
+            ExprParams ep;
+            ep.detuneCents = 0.0f;
+            ep.vibratoDepth = 0.3f;
+            shapeExpression (p, ep);
+            auto swing = [] (const Note& n)
+            {
+                float lo = 0.0f, hi = 0.0f;
+                for (const auto& pt : n.bend)
+                {
+                    lo = std::min (lo, pt.v);
+                    hi = std::max (hi, pt.v);
+                }
+                return std::pair { lo, hi };
+            };
+            const auto [lo, hi] = swing (p.notes[0]);
+            expectWithinAbsoluteError (hi, 0.3f, 0.03f, "vibrato must reach its depth");
+            expectWithinAbsoluteError (lo, -0.3f, 0.03f, "vibrato must reach its depth");
+            const auto [lo1, hi1] = swing (p.notes[1]);
+            expectGreaterThan (hi1 - lo1, 0.3f, "a 1-beat note must sing too");
+            for (const auto& pt : p.notes[2].bend)
+                expectWithinAbsoluteError (pt.v, 0.0f, 1.0e-6f, "a 16th has no vibrato");
+        }
+
+        beginTest ("Detune: every note of a single line has its own offset and drift, within the setting");
+        {
+            Phrase p;
+            p.lengthBeats = 16.0;
+            for (int i = 0; i < 16; ++i)
+                p.notes.push_back (single (i, 0.9, 60, 100 + (uint64_t) i));
+            ExprParams ep;
+            ep.detuneCents = 20.0f;
+            ep.vibratoDepth = 0.0f;
+            shapeExpression (p, ep);
+            std::set<int> offsets;
+            float widest = 0.0f, drift = 0.0f;
+            for (const auto& n : p.notes)
+            {
+                offsets.insert (juce::roundToInt (n.bend.front().v * 1000.0f));
+                float lo = 1.0f, hi = -1.0f;
+                for (const auto& pt : n.bend)
+                {
+                    widest = std::max (widest, std::abs (pt.v));
+                    lo = std::min (lo, pt.v);
+                    hi = std::max (hi, pt.v);
+                }
+                drift = std::max (drift, hi - lo);
+            }
+            expectGreaterThan ((int) offsets.size(), 10, "notes must be detuned differently");
+            expectLessOrEqual (widest, 0.2f * 0.5f + 0.2f * 0.3f + 1.0e-4f, "detune stays within the setting");
+            expectGreaterThan (drift, 0.01f, "detune drifts inside a note");
+
+            // The same seed gives the same detune (repeated sections).
+            Phrase q;
+            q.lengthBeats = 16.0;
+            q.notes = { single (8.0, 0.9, 60, 100) };
+            shapeExpression (q, ep);
+            expectWithinAbsoluteError (q.notes[0].bend.front().v, p.notes[0].bend.front().v, 1.0e-6f);
+        }
+
+        beginTest ("Gesture curves are layered on the generated expression");
+        {
+            Phrase p;
+            p.lengthBeats = 4.0;
+            auto n = single (0.0, 1.0, 60, 7);
+            n.gesture = { { 0.0, 0.0f }, { 0.25, 0.0f }, { 0.3, -2.0f }, { 0.6, -2.0f }, { 0.65, 0.0f } };
+            n.gestureTimbre = { { 0.0, 0.3f }, { 1.0, 0.0f } };
+            n.vibrato = 0.0f;
+            p.notes = { n };
+            ExprParams ep;
+            ep.detuneCents = 0.0f;
+            shapeExpression (p, ep);
+            const auto& out = p.notes[0];
+            expectWithinAbsoluteError (evalCurve (out.bend, 0.45, 0.0f), -2.0f, 1.0e-4f, "the dip must be in the bend");
+            expectWithinAbsoluteError (evalCurve (out.bend, 0.9, 0.0f), 0.0f, 1.0e-4f, "and come back");
+            bool hasCorner = false;
+            for (const auto& pt : out.bend)
+                hasCorner = hasCorner || std::abs (pt.t - 0.3) < 1.0e-9;
+            expect (hasCorner, "gesture points must be kept exactly");
+        }
+    }
+};
+
+static ExpressionTests expressionTests;
+
+class GestureTests : public juce::UnitTest
+{
+public:
+    GestureTests() : juce::UnitTest ("DarkMPE gestures") {}
+
+    static Phrase longNotes (int count, double length)
+    {
+        Phrase p;
+        p.lengthBeats = count;
+        for (int i = 0; i < count; ++i)
+        {
+            Note n;
+            n.start = i;
+            n.length = length;
+            n.pitch = 57 + (i % 5) * 2;
+            n.exprSeed = 900 + (uint64_t) i;
+            p.notes.push_back (n);
+        }
+        return p;
+    }
+
+    static std::set<int> kinds (const Phrase& p)
+    {
+        std::set<int> k;
+        for (const auto& n : p.notes)
+            k.insert (n.gestureKind);
+        return k;
+    }
+
+    void runTest() override
+    {
+        beginTest ("Classic changes nothing");
+        {
+            GenParams gp;
+            gp.bars = 8;
+            const auto plain = generateMelody (gp);
+            auto shaped = plain;
+            GestureParams g;
+            g.profile = GestureProfile::classic;
+            g.amount = 1.0f;
+            g.riff = 1.0f;
+            applyGestures (shaped, g, GestureRole::lead);
+            expectEquals ((int) shaped.notes.size(), (int) plain.notes.size());
+            for (const auto& n : shaped.notes)
+                expect (n.gesture.empty() && n.gestureKind == 0 && n.articulation == 0);
+        }
+
+        beginTest ("Every profile x style x role: deterministic, in the loop, within Depth, valid MPE");
+        for (int prof = 0; prof < (int) GestureProfile::count; ++prof)
+            for (int st = 0; st < (int) Style::count; ++st)
+                for (auto role : { GestureRole::lead, GestureRole::bass, GestureRole::arp })
+                {
+                    GenParams gp;
+                    gp.style = (Style) st;
+                    gp.bars = 4;
+                    gp.slide = 0.5f;
+                    gp.seed = 70 + prof * 7 + st;
+                    GestureParams g;
+                    g.profile = (GestureProfile) prof;
+                    g.style = gp.style;
+                    g.amount = 0.9f;
+                    g.depth = (float) st / (float) Style::count;
+                    g.riff = 0.8f;
+                    g.seed = gp.seed;
+                    auto a = generateMelody (gp);
+                    auto b = a;
+                    applyGestures (a, g, role);
+                    applyGestures (b, g, role);
+                    const juce::String what = juce::String (gestureProfileNames[prof]) + " / " + styleNames[st] + " / role " + juce::String ((int) role);
+
+                    expectEquals ((int) a.notes.size(), (int) b.notes.size(), what);
+                    const float maxSemis = std::max (gestureDepthSemitones (g.depth), role == GestureRole::bass ? 12.0f : 0.0f);
+                    for (size_t i = 0; i < a.notes.size(); ++i)
+                    {
+                        const auto& n = a.notes[i];
+                        expect (n.gesture.size() == b.notes[i].gesture.size(), what + " not deterministic");
+                        expect (n.start >= 0.0 && n.end() <= a.lengthBeats + 1.0e-6, what + ": note outside the loop");
+                        const float glide = n.glideFrom >= 0 ? (float) std::abs (n.glideFrom - n.pitch) : 0.0f;
+                        double t = -1.0;
+                        for (const auto& pt : n.gesture)
+                        {
+                            expect (pt.t >= t - 1.0e-9, what + ": gesture curve out of order");
+                            t = pt.t;
+                            expectLessOrEqual (pt.t, n.length + 1.0e-6, what + ": gesture past the note");
+                            expectLessOrEqual (std::abs (pt.v), std::max (maxSemis, glide) + 1.0e-3f,
+                                               what + ": gesture deeper than Depth (" + gestureNames[n.gestureKind] + ")");
+                        }
+                    }
+
+                    ExprParams ep;
+                    shapeExpression (a, ep);
+                    juce::String why;
+                    expect (channelsAreExclusive (renderMpe (a), why), what + ": " + why);
+                    for (const auto& n : a.notes)
+                        for (const auto& pt : n.bend)
+                            expectLessOrEqual (std::abs (pt.v), 48.0f, what + ": bend beyond the MPE range");
+                }
+
+        beginTest ("Bend Riff: a run of 16ths becomes one note that bends through the run's pitches");
+        {
+            Phrase p;
+            p.lengthBeats = 4.0;
+            const int pitches[] = { 60, 62, 63, 62 };
+            for (int i = 0; i < 4; ++i)
+            {
+                Note n;
+                n.start = i * 0.25;
+                n.length = 0.22;
+                n.pitch = pitches[i];
+                n.exprSeed = 31;
+                p.notes.push_back (n);
+            }
+            GestureParams g;
+            g.profile = GestureProfile::liquid; // riff weight 1: the run always merges
+            g.riff = 1.0f;
+            g.amount = 0.0f;
+            g.depth = 0.5f;
+            applyGestures (p, g, GestureRole::lead);
+            expectLessThan ((int) p.notes.size(), 4, "the run must merge");
+            const auto& riff = p.notes.front();
+            expectEquals (riff.gestureKind, (int) Gesture::riff);
+            expectEquals (riff.vibrato, 0.0f);
+            const int merged = (int) std::lround (riff.end() / 0.25);
+            expectGreaterOrEqual (merged, 2);
+            for (int k = 1; k < merged; ++k)
+                expectWithinAbsoluteError (evalCurve (riff.gesture, k * 0.25 + 0.08, 0.0f), (float) (pitches[k] - 60), 1.0e-3f,
+                                           "the riff must reach every pitch of the run on its beat");
+            expect (! riff.gesturePress.empty() && ! riff.gestureTimbre.empty(), "the attacks are re-articulated");
+
+            // Mono render: one note-on for the whole riff, the pitches are bends.
+            shapeExpression (p, {});
+            int noteOns = 0;
+            for (auto* ev : renderMono (p, 12, false))
+                noteOns += ev->message.isNoteOn() ? 1 : 0;
+            expectEquals (noteOns, (int) p.notes.size());
+        }
+
+        beginTest ("Profiles have their own vocabulary");
+        {
+            auto run = [] (GestureProfile prof, GestureRole role)
+            {
+                auto p = longNotes (32, 0.6); // with room after every note (falls and dives don't lean into the next)
+                GestureParams g;
+                g.profile = prof;
+                g.amount = 1.0f;
+                g.depth = 0.6f;
+                applyGestures (p, g, role);
+                return kinds (p);
+            };
+            expect (run (GestureProfile::classic, GestureRole::lead) == std::set<int> { 0 });
+            const auto glitch = run (GestureProfile::glitch, GestureRole::lead);
+            expect (glitch.count ((int) Gesture::trill) != 0, "Glitch trills");
+            const auto vocal = run (GestureProfile::vocal, GestureRole::lead);
+            expect (vocal.count ((int) Gesture::fall) != 0 || vocal.count ((int) Gesture::scoop) != 0, "Vocal scoops and falls");
+            const auto bass = run (GestureProfile::aggressive, GestureRole::bass);
+            expect (bass.count ((int) Gesture::dive) != 0, "an aggressive bass dives");
+            expect (bass.count ((int) Gesture::trill) == 0 && bass.count ((int) Gesture::lift) == 0, "a bass never trills or lifts");
+
+            // A dip goes down a scale step (1 or 2 semitones) and comes back.
+            auto p = longNotes (32, 0.9);
+            GestureParams g;
+            g.profile = GestureProfile::liquid;
+            g.amount = 1.0f;
+            g.depth = 0.2f;
+            applyGestures (p, g, GestureRole::lead);
+            int dips = 0;
+            for (const auto& n : p.notes)
+                if (n.gestureKind == (int) Gesture::dip)
+                {
+                    ++dips;
+                    float lo = 0.0f;
+                    for (const auto& pt : n.gesture)
+                        lo = std::min (lo, pt.v);
+                    expect (lo <= -1.0f + 1.0e-3f && lo >= -2.0f - 1.0e-3f, "a dip is one scale step");
+                    expectWithinAbsoluteError (n.gesture.back().v, 0.0f, 1.0e-4f, "a dip comes back");
+                }
+            expectGreaterThan (dips, 0);
+        }
+
+        beginTest ("Phrase form: a repeated A repeats its gestures");
+        for (int st = 0; st < (int) Style::count; ++st)
+        {
+            GenParams gp;
+            gp.form = Form::abac;
+            gp.style = (Style) st;
+            gp.seed = 500 + st;
+            auto mel = generateMelody (gp);
+            GestureParams g;
+            g.profile = GestureProfile::glitch;
+            g.amount = 1.0f;
+            g.riff = 0.7f;
+            g.seed = gp.seed;
+            applyGestures (mel, g, GestureRole::lead);
+            auto bar = [&mel] (int b)
+            {
+                std::vector<std::pair<long, int>> v;
+                for (size_t i = 1; i + 1 < mel.notes.size(); ++i)
+                {
+                    const auto& n = mel.notes[i];
+                    // The first note of a section may glide in from what came before and the last may lean into
+                    // what follows: both differ between the two A's.
+                    const int own = (int) std::floor (n.start / 4.0);
+                    // A glide into the voice starts from the pedal, which follows the chord: skip those too.
+                    if (n.pedal || n.glideFrom >= 0 || own != b || (int) std::floor (mel.notes[i - 1].start / 4.0) != b
+                        || (int) std::floor (mel.notes[i + 1].start / 4.0) != b)
+                        continue;
+                    v.push_back ({ std::lround ((n.start - b * 4.0) * 1000.0), n.gestureKind * 1000 + (int) n.gesture.size() });
+                }
+                return v;
+            };
+            expect (bar (0) == bar (2), juce::String (styleNames[st]) + ": A must repeat its gestures");
+        }
+
+        beginTest ("Chords: every voice of a stab does the same gesture");
+        {
+            KitParams kp;
+            kp.layers[(size_t) Layer::stab].pattern = (int) StabPattern::offbeat;
+            Phrase stab;
+            for (auto& part : generateKit (kp))
+                if (part.layer == Layer::stab)
+                    stab = part.phrase;
+            GestureParams g;
+            g.profile = GestureProfile::aggressive;
+            g.amount = 1.0f;
+            applyGestures (stab, g, GestureRole::chord);
+            int gestured = 0;
+            for (size_t i = 1; i < stab.notes.size(); ++i)
+                if (std::abs (stab.notes[i].start - stab.notes[i - 1].start) < 1.0e-6)
+                    expectEquals (stab.notes[i].gestureKind, stab.notes[i - 1].gestureKind);
+            for (const auto& n : stab.notes)
+                gestured += n.gestureKind != 0 ? 1 : 0;
+            expectGreaterThan (gestured, 0);
+            shapeExpression (stab, {});
+            juce::String why;
+            expect (channelsAreExclusive (renderMpe (stab), why), why);
+        }
+
+        beginTest ("Event density with gestures stays reasonable");
+        {
+            GenParams gp;
+            gp.bars = 8;
+            for (int prof = 1; prof < (int) GestureProfile::count; ++prof)
+            {
+                auto lead = generateMelody (gp);
+                GestureParams g;
+                g.profile = (GestureProfile) prof;
+                g.amount = 1.0f;
+                g.depth = 1.0f;
+                applyGestures (lead, g, GestureRole::lead);
+                shapeExpression (lead, {});
+                const int events = renderMpe (lead).getNumEvents();
+                std::cout << "    " << gestureProfileNames[prof] << ": " << events << " events, 8 bars" << std::endl;
+                expectLessThan (events, 9000, gestureProfileNames[prof]);
+            }
+        }
+    }
+};
+
+static GestureTests gestureTests;
+
 static EngineTests engineTests;
 static CinematicTests cinematicTests;
 static MpeImportTests mpeImportTests;
@@ -1230,15 +1798,44 @@ static int renderExamples (const juce::File& inDir, const juce::File& outDir)
         write (renderMpe (p), name, p.notes.size());
     };
 
+    // The plugin's default gestures (Auto: the style's profile).
+    auto gestures = [] (const GenParams& gp)
+    {
+        GestureParams g;
+        g.key = gp.key;
+        g.scale = gp.scale;
+        g.style = gp.style;
+        g.seed = gp.seed;
+        return g;
+    };
+
     for (int s = 0; s < (int) Style::count; ++s)
     {
         GenParams gp;
         gp.style = (Style) s;
         gp.seed = 666 + s;
         auto lead = generateMelody (gp);
+        applyGestures (lead, gestures (gp), GestureRole::lead);
         save (lead, juce::String ("Lead - ") + styleNames[s]);
         shapeExpression (lead, {});
         write (renderMono (lead, 12, true), juce::String ("Lead - ") + styleNames[s] + " (Mono, bend 12)", lead.notes.size());
+    }
+
+    // Every gesture profile on the same Pursuit lead (8 bars).
+    for (int prof = 0; prof < (int) GestureProfile::count - 1; ++prof)
+    {
+        GenParams gp;
+        gp.style = Style::pursuit;
+        gp.seed = 666;
+        gp.bars = 8;
+        gp.gate = 0.75f;
+        auto lead = generateMelody (gp);
+        auto g = gestures (gp);
+        g.profile = (GestureProfile) prof;
+        g.amount = 0.6f;
+        g.riff = 0.5f;
+        applyGestures (lead, g, GestureRole::lead);
+        save (lead, juce::String ("Gesture - Pursuit - ") + gestureProfileNames[prof]);
     }
 
     // Phrase forms: the same seed as classic, as A B A C / period / sentence / sequence (8 bars).
@@ -1249,22 +1846,9 @@ static int renderExamples (const juce::File& inDir, const juce::File& outDir)
         gp.seed = 666;
         gp.bars = 8;
         gp.form = form;
-        save (generateMelody (gp), juce::String ("Form - Lead Pursuit - ") + formNames[(int) form]);
-
-        HarmonyParams hp;
-        hp.bars = 8;
-        hp.form = form;
-        CineParams cp;
-        cp.reharm = Reharm::suspensions;
-        cp.tension = 0.3f;
-        cp.sub = true;
-        std::vector<Region> used;
-        auto phrase = cinematicRegions (generateProgression (hp), 32.0, cp, hp.key, &used);
-        juce::String chords;
-        for (const auto& r : used)
-            chords << " " << chordSymbol (r);
-        std::cout << "  " << formNames[(int) form] << ":" << chords << std::endl;
-        save (phrase, juce::String ("Form - Cinematic Epic Minor - ") + formNames[(int) form]);
+        auto lead = generateMelody (gp);
+        applyGestures (lead, gestures (gp), GestureRole::lead);
+        save (lead, juce::String ("Form - Lead Pursuit - ") + formNames[(int) form]);
     }
 
     struct Showcase { const char* name; Progression prog; Motion motion; Reharm reharm; VoicingMode voicing; GlideShape shape;
@@ -1280,6 +1864,9 @@ static int renderExamples (const juce::File& inDir, const juce::File& outDir)
         { "Harmonic Dominant - Breathe",   Progression::harmonicDominant, Motion::breathe,     Reharm::chromaticApproach, VoicingMode::hyperSpread, GlideShape::ease,     0.4f,  0.6f, 0.4f, false, ChordLength::oneBar },
         { "Auto - Planing Morph",          Progression::autoSeed,         Motion::morph,       Reharm::planing,           VoicingMode::gothic,      GlideShape::swoopOut, 0.3f,  0.8f, 0.0f, true,  ChordLength::oneBar },
         { "Neapolitan - Tritone Approach", Progression::neapolitan,       Motion::morph,       Reharm::tritoneApproach,   VoicingMode::epicSpread,  GlideShape::ease,     0.3f,  0.7f, 0.3f, true,  ChordLength::oneBar },
+        { "Epic Minor - Counterline",      Progression::epicMinor,        Motion::counterline, Reharm::suspensions,       VoicingMode::epicSpread,  GlideShape::ease,     0.3f,  0.5f, 0.0f, true,  ChordLength::oneBar },
+        { "Lament Bass - Ripple",          Progression::lamentBass,       Motion::ripple,      Reharm::off,               VoicingMode::gothic,      GlideShape::ease,     0.35f, 0.7f, 0.0f, true,  ChordLength::oneBar },
+        { "Auto - Shimmer",                Progression::autoSeed,         Motion::shimmer,     Reharm::off,               VoicingMode::epicSpread,  GlideShape::swoopOut, 0.4f,  0.6f, 0.0f, true,  ChordLength::twoBars },
     };
     int index = 1;
     for (const auto& s : shows)
@@ -1319,6 +1906,17 @@ static int renderExamples (const juce::File& inDir, const juce::File& outDir)
     kp.pad.tension = 0.35f;
     for (auto& part : generateKit (kp))
     {
+        const auto g = gestures (kp.gen);
+        switch (part.layer)
+        {
+            case Layer::lead:  applyGestures (part.phrase, g, GestureRole::lead); break;
+            case Layer::bass:  applyGestures (part.phrase, g, GestureRole::bass); break;
+            case Layer::arp:   applyGestures (part.phrase, g, GestureRole::arp); break;
+            case Layer::stab:  applyGestures (part.phrase, g, GestureRole::chord); break;
+            case Layer::siren:
+            case Layer::pad:
+            case Layer::count: break;
+        }
         shapeExpression (part.phrase, {});
         if (part.layer == Layer::bass)
             write (renderMono (part.phrase, 12, true), "Kit - Pursuit A Phrygian - Bass (Mono, bend 12)", part.phrase.notes.size());
@@ -1390,7 +1988,7 @@ int main (int argc, char** argv)
 
     juce::UnitTestRunner runner;
     runner.setAssertOnFailure (false);
-    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &harmonyTests, &kitTests, &formTests, &renderTests });
+    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &harmonyTests, &kitTests, &formTests, &renderTests, &expressionTests, &gestureTests, &chordTests });
 
     int failures = 0;
     for (int i = 0; i < runner.getNumResults(); ++i)

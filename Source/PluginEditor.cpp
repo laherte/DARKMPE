@@ -2,6 +2,7 @@
 #include "presets/Presets.h"
 
 #include <map>
+#include <tuple>
 
 using namespace theme;
 
@@ -106,7 +107,8 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
       previewToggle (p.apvts, "preview", "Preview"),
       formChoice (p.apvts, "form", "Phrase Form"),
       roll (p),
-      monitor (p)
+      monitor (p),
+      scope (p)
 {
     setLookAndFeel (&lnf);
     addAndMakeVisible (content);
@@ -193,7 +195,8 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
         content.addAndMakeVisible (*b);
     content.addAndMakeVisible (previewToggle);
     content.addAndMakeVisible (formChoice);
-    formChoice.box.setTooltip ("Classic, or call & response: A B A C, A A B A, A A A B, period, sentence, sequence");
+    formChoice.box.setTooltip ("Phrase form of the melodic lines (lead, bass, arp): Classic, or call & response: "
+                               "A B A C, A A B A, A A A B, period, sentence, sequence. Chords are never changed by the form.");
     content.addAndMakeVisible (dragOut);
 
     status.setFont (juce::FontOptions (11.5f));
@@ -202,6 +205,7 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     content.addAndMakeVisible (status);
     content.addAndMakeVisible (roll);
     content.addAndMakeVisible (monitor);
+    content.addAndMakeVisible (scope);
 
     auto knob = [&] (auto& list, const char* id, const char* label) { list.push_back (std::make_unique<Knob> (s, id, label)); };
     auto choice = [&] (auto& list, const char* id, const char* label) { list.push_back (std::make_unique<Choice> (s, id, label)); };
@@ -242,6 +246,17 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
                               { "cLow", "Low Note" }, { "cHigh", "High Note" } })
         knob (cineControls, id, label);
 
+    choice (exprControls, "gesture", "Gesture");
+    static_cast<Choice*> (exprControls.back().get())->box.setTooltip (
+        "MPE gestures: Classic (glides only), Liquid, Vocal, Acid, Aggressive, Glitch, or Auto (from the style). "
+        "Dips, lifts, scoops, falls, partial glides, overshoots, stepped glides, trills, wobbles, dives, Bend Riffs");
+    for (auto [id, label, tip] : { std::tuple { "gAmount", "Amount", "How many notes get a gesture (and a timbre / pressure articulation)" },
+                                   { "gDepth", "Depth", "Largest gesture: 1 semitone (0) to an octave (1)" },
+                                   { "gRiff", "Bend Riff", "How often a run of short notes becomes one note bent through their pitches" } })
+    {
+        knob (exprControls, id, label);
+        static_cast<Knob*> (exprControls.back().get())->slider.setTooltip (tip);
+    }
     for (auto [id, label] : { std::pair { "glideTime", "Glide Time" }, { "glideCurve", "Glide Curve" }, { "detune", "Detune" },
                               { "vibDepth", "Vibrato" }, { "vibRate", "Vib Rate" }, { "vibDelay", "Vib Delay" },
                               { "slideAmt", "Timbre" }, { "slideSpread", "Timbre Sprd" }, { "pressAmt", "Pressure" },
@@ -310,6 +325,20 @@ void DarkMPEEditor::timerCallback()
     if (proc.getMode() != shownMode)
         updateModeVisibility();
     updateSeedControls();
+    updateFormEnabled();
+}
+
+void DarkMPEEditor::updateFormEnabled()
+{
+    // The form shapes melodic lines only: nothing to shape in CINEMATIC, or when transforming a loaded file.
+    const auto mode = proc.getMode();
+    const bool melodic = mode == DarkMPEProcessor::Mode::generate || mode == DarkMPEProcessor::Mode::kit
+                      || (mode == DarkMPEProcessor::Mode::transform && ! proc.hasSource());
+    if (formChoice.isEnabled() != melodic)
+    {
+        formChoice.setEnabled (melodic);
+        formChoice.setAlpha (melodic ? 1.0f : 0.4f);
+    }
 }
 
 void DarkMPEEditor::updateSeedControls()
@@ -469,6 +498,7 @@ void DarkMPEEditor::updateModeVisibility()
     for (auto& c : kitControls) c->setVisible (kit);
     for (auto& r : layerRows) r->setVisible (kit);
     mutateBtn.setEnabled (gen || kit);
+    updateFormEnabled();
     if (xform && proc.hasSource())
         setStatus ("Source: " + proc.getSourceName() + "  -  " + proc.describeSource());
     if (cine || kit)
@@ -599,7 +629,7 @@ void DarkMPEEditor::layoutContent()
     status.setBounds (bar.reduced (8, 0));
 
     r.removeFromTop (4);
-    roll.setBounds (r.removeFromTop (282));
+    roll.setBounds (r.removeFromTop (330));
     r.removeFromTop (4);
     monitor.setBounds (r.removeFromTop (56));
     r.removeFromTop (8);
@@ -608,7 +638,7 @@ void DarkMPEEditor::layoutContent()
     const int w = r.getWidth();
     modeArea = r.removeFromLeft ((int) (w * 0.535f));
     r.removeFromLeft (8);
-    exprArea = r.removeFromLeft ((int) (w * 0.285f));
+    exprArea = r.removeFromLeft ((int) (w * 0.318f));
     r.removeFromLeft (8);
     outArea = r;
 
@@ -631,7 +661,9 @@ void DarkMPEEditor::layoutContent()
     flow (genControls, inner (modeArea));
     flow (voiceControls, inner (modeArea));
     flow (cineControls, inner (modeArea));
-    flow (exprControls, inner (exprArea));
+    auto exprInner = inner (exprArea);
+    scope.setBounds (exprInner.removeFromBottom (78));
+    flow (exprControls, exprInner);
     flow (outControls, inner (outArea));
 
     // KIT: shared choices, then one row per layer.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 namespace dmpe
@@ -44,6 +45,22 @@ struct Note
     bool chromatic = false;
     bool lockedExpr = false;    // curves were authored by an engine (cinematic): the shaper only adds detune
     bool hasSourceExpr = false; // bend/slide/pressure came from an imported (MPE) performance
+    bool pedal = false;         // the riff's root pedal (follows the chord), not the moving voice
+
+    // Phrase form: the kind of section the note belongs to (SectionKind), -1 = no form.
+    int sectionKind = -1;
+    // Seed for everything random about this note after generation (humanize, detune, vibrato phase, gestures).
+    // Generators give notes of repeated sections the same seed, so a section comes back identical; 0 = none.
+    uint64_t exprSeed = 0;
+
+    // Authored motion (GestureEngine), layered by ExpressionShaper on top of what it generates. Beats from the note start.
+    Curve gesture;              // pitch, semitones added to the bend
+    Curve gestureTimbre;        // CC74 offset, added (-1..1)
+    Curve gesturePress;         // pressure gain (empty = 1)
+    bool glideAuthored = false; // the gesture curve already contains the glide-in from glideFrom
+    float vibrato = 1.0f;       // vibrato depth scale (0 while a riff / trill owns the pitch, > 1 on held notes)
+    int gestureKind = 0;        // the gesture applied (dmpe::Gesture), 0 = none
+    int articulation = 0;       // the timbre / pressure articulation (dmpe::Articulation), 0 = none
 
     // MPE expression (filled by ExpressionShaper).
     Curve bend;     // semitones relative to pitch

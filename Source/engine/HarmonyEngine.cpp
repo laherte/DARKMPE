@@ -66,117 +66,113 @@ const T& pickWeighted (Rng& rng, const std::vector<T>& items, const std::vector<
     return items.back();
 }
 
-// A seeded walk: diatonic moves of the scale, plus dark chromatic ones weighted by `darkness`; the last chord
-// always leads back to the tonic.
+// Harmonic functions of a minor-key phrase.
+enum class Fn { tonic, pre, dom };
+
+// A seeded progression that follows functional grammar: every phrase starts on the tonic (or a substitute), moves
+// through predominant chords and ends on a dominant, so the loop always leads home. From 8 chords on the loop is
+// two phrases (a half cadence in the middle). Darkness weighs the chromatic chords (bII, bvi, #iv, vii dim, V7...)
+// against the diatonic ones, and some chords are inverted so the bass walks by step.
 std::vector<ChordDef> autoProgression (const HarmonyParams& p, int count)
 {
     Rng rng ((uint64_t) p.seed * 7727ull + 11ull);
+    const float bright = 1.0f - 0.7f * p.darkness, dark = 0.1f + 1.3f * p.darkness;
 
-    std::vector<ChordDef> diatonic;
-    for (int d = 1; d < 7; ++d)
+    auto pool = [&] (Fn f, std::vector<ChordDef>& chords, std::vector<float>& weights)
     {
-        auto c = diatonicTriad (p.scale, d);
-        if (c.iv[2] == 7 || c.iv[2] == 6) // keep real triads (pentatonic stacks can be odd)
-            diatonic.push_back (c);
-    }
-    const std::vector<ChordDef> dark {
-        { 1, q::maj },  // bII: phrygian / neapolitan
-        { 8, q::min },  // bvi: chromatic mediant
-        { 4, q::min },  // iii: chromatic mediant
-        { 6, q::min },  // #iv: tritone
-        { 11, q::dim }, // vii dim
-        { 7, q::dom7 }, // V7 with the leading tone
+        chords.clear();
+        weights.clear();
+        auto diatonic = [&] (int degree, float w)
+        {
+            const auto c = diatonicTriad (p.scale, degree);
+            if (c.iv[2] == 7 || c.iv[2] == 6) // real triads only (pentatonic stacks can be odd)
+            {
+                chords.push_back (c);
+                weights.push_back (w * bright);
+            }
+        };
+        auto chromatic = [&] (ChordDef c, float w)
+        {
+            chords.push_back (std::move (c));
+            weights.push_back (w * dark);
+        };
+        switch (f)
+        {
+            case Fn::tonic: // i, bIII, bVI; bvi (chromatic mediant), i(maj7)
+                diatonic (0, 1.0f); diatonic (2, 1.0f); diatonic (5, 0.8f);
+                chromatic ({ 8, q::min }, 0.8f); chromatic ({ 0, q::minMaj7 }, 0.4f);
+                break;
+            case Fn::pre:   // iv, bVI, ii; bII (neapolitan), iv6, bvi
+                diatonic (3, 1.2f); diatonic (5, 1.0f); diatonic (1, 0.6f);
+                chromatic ({ 1, q::maj }, 1.0f); chromatic ({ 5, q::min6 }, 0.4f); chromatic ({ 8, q::min }, 0.5f);
+                break;
+            case Fn::dom:   // v, bVII; V7, vii dim, bII (phrygian cadence), #iv (tritone), iii (mediant)
+                diatonic (4, 1.0f); diatonic (6, 1.0f);
+                chromatic ({ 7, q::dom7 }, 1.2f); chromatic ({ 11, q::dim }, 0.5f); chromatic ({ 1, q::maj }, 0.6f);
+                chromatic ({ 6, q::min }, 0.6f); chromatic ({ 4, q::min }, 0.5f);
+                break;
+        }
     };
-    const std::vector<ChordDef> cadence { { 7, q::maj }, { 1, q::maj }, { 10, q::maj }, { 5, q::min }, { 8, q::maj } };
-    const std::vector<float> cadenceWeights { 1.0f + p.darkness, 0.3f + 1.5f * p.darkness, 1.0f, 1.0f - 0.5f * p.darkness, 0.8f };
 
+    const int phraseLen = count >= 8 ? count / 2 : count;
     std::vector<ChordDef> out;
-    out.push_back (diatonicTriad (p.scale, 0));
-
-    for (int i = 1; i < count; ++i)
+    std::vector<ChordDef> chords;
+    std::vector<float> weights;
+    for (int i = 0; i < count; ++i)
     {
-        const bool last = i == count - 1 && count > 2;
-        std::vector<ChordDef> pool;
-        std::vector<float> weights;
-        if (last)
+        if (i == 0)
         {
-            pool = cadence;
-            weights = cadenceWeights;
+            out.push_back (diatonicTriad (p.scale, 0));
+            continue;
         }
-        else
-        {
-            for (const auto& c : diatonic) { pool.push_back (c); weights.push_back (1.0f - 0.75f * p.darkness); }
-            for (const auto& c : dark)     { pool.push_back (c); weights.push_back (0.1f + 1.2f * p.darkness); }
-        }
+        const int k = i % phraseLen;
+        Fn f = rng.chance (0.5f) ? Fn::tonic : Fn::pre;
+        if (k == 0)
+            f = Fn::tonic;
+        else if (k == phraseLen - 1)
+            f = Fn::dom;
+        else if (k == phraseLen - 2)
+            f = Fn::pre;
 
-        // Never repeat the previous chord.
-        for (size_t k = 0; k < pool.size(); ++k)
-            if (pool[k].root == out.back().root && pool[k].iv == out.back().iv)
-                weights[k] = 0.0f;
-        out.push_back (pickWeighted (rng, pool, weights));
+        pool (f, chords, weights);
+        for (size_t c = 0; c < chords.size(); ++c) // never the previous chord again
+            if (chords[c].root == out.back().root && chords[c].iv == out.back().iv)
+                weights[c] = 0.0f;
+        out.push_back (pickWeighted (rng, chords, weights));
+    }
+
+    // Bass line: where the root would leap, an inversion may let the bass move by step instead.
+    int bass = 0;
+    for (size_t i = 1; i < out.size(); ++i)
+    {
+        auto& c = out[i];
+        auto distance = [bass] (int pc) { const int d = mod (pc - bass, 12); return std::min (d, 12 - d); };
+        int best = c.root;
+        for (int iv : c.iv)
+            if (distance (mod (c.root + iv, 12)) < distance (best))
+                best = mod (c.root + iv, 12);
+        if (distance (c.root) > 2 && distance (best) <= 2 && rng.chance (0.3f + 0.4f * p.darkness))
+            c.bass = best;
+        bass = c.bass >= 0 ? c.bass : c.root;
     }
     return out;
 }
 
-// Chord j of a section of `groupSize` chords, built from the base progression.
-ChordDef sectionChord (const std::vector<ChordDef>& base, const Section& s, int j, int groupSize)
-{
-    auto at = [&base] (int k) { return base[(size_t) (k % (int) base.size())]; };
-    const int last = groupSize - 1;
-    switch (s.kind)
-    {
-        case SectionKind::statement:
-        {
-            // A, or A moved up (sequence: a whole step per step; A' of a sentence: a minor third).
-            static const int semis[] = { 0, 2, 3, 5 };
-            auto c = at (j);
-            const int t = semis[std::clamp (s.shift, 0, 3)];
-            c.root += t;
-            if (c.bass >= 0)
-                c.bass += t;
-            return c;
-        }
-        case SectionKind::answer:       return at (groupSize + j);
-        case SectionKind::closedAnswer: return j == last ? (groupSize > 1 ? at (0) : at (3)) : at (groupSize + j);
-        case SectionKind::close:
-            if (j == last)
-                return { 7, q::dom7 };
-            if (j == last - 1)
-                return { 5, q::min };
-            return at (2 * groupSize + j);
-        case SectionKind::fragment:     return at (j % 2);
-    }
-    return at (j);
-}
-
 } // namespace
 
-std::vector<Region> generateProgression (const HarmonyParams& p, SectionMarks* sections)
+std::vector<Region> generateProgression (const HarmonyParams& p)
 {
     const double total = std::clamp (p.bars, 1, 16) * 4.0;
     const double len = chordBeats (p.chordLength);
     const int count = std::max (1, (int) std::ceil (total / len - 1.0e-9));
 
-    const auto base = p.progression == Progression::autoSeed ? autoProgression (p, std::max (count, 4)) : fixedProgression (p.progression);
+    const auto base = p.progression == Progression::autoSeed ? autoProgression (p, count) : fixedProgression (p.progression);
     const int tonic = p.key + 48; // around C3..B3: the voicing places everything anyway
 
-    // The chord of every slot: the progression repeated, or regrouped by the form.
+    // The chord of every slot: the progression, repeated.
     std::vector<ChordDef> defs;
-    if (p.form == Form::classic || count < 2)
-        for (int i = 0; i < count; ++i)
-            defs.push_back (base[(size_t) i % base.size()]);
-    else
-    {
-        const int group = std::max (1, count / 4);
-        const auto secs = formSections (p.form, (count + group - 1) / group);
-        for (size_t si = 0; si < secs.size(); ++si)
-        {
-            if (sections != nullptr)
-                sections->push_back ({ (double) si * group * len, secs[si].label });
-            for (int j = 0; j < group && (int) defs.size() < count; ++j)
-                defs.push_back (sectionChord (base, secs[si], j, group));
-        }
-    }
+    for (int i = 0; i < count; ++i)
+        defs.push_back (base[(size_t) i % base.size()]);
 
     std::vector<Region> out;
     for (int i = 0; i < count; ++i)
@@ -199,12 +195,18 @@ void colourRegions (std::vector<Region>& regions, float tension, float darkness,
     if (tension <= 0.0f)
         return;
 
-    Rng rng ((uint64_t) seed * 4099ull + 3ull);
     for (auto& r : regions)
     {
         if (r.pitches.empty())
             continue;
         const int root = r.pitches.front();
+
+        // Seeded by the chord itself: a chord that comes back gets the same colours (the loop sounds like one).
+        uint64_t id = mixSeed ((uint64_t) seed * 4099ull + 3ull, (uint64_t) (r.bassPc + 1));
+        id = mixSeed (id, (uint64_t) mod (root, 12));
+        for (int x : r.pitches)
+            id = mixSeed (id, (uint64_t) (x - root + 64));
+        Rng rng (id);
         std::set<int> rel;
         for (int x : r.pitches)
             rel.insert (mod (x - root, 12));

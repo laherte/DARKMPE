@@ -31,4 +31,23 @@ struct Rng
     uint64_t state;
 };
 
+// FNV-1a of a section label ("A", "B'", ...): the same label gives the same random choices.
+inline uint64_t labelHash (const char* label)
+{
+    uint64_t h = 1469598103934665603ull;
+    for (; *label != 0; ++label)
+        h = (h ^ (uint64_t) (unsigned char) *label) * 1099511628211ull;
+    return h;
+}
+
+// Combines seed parts into one well-spread, never-zero seed (0 means "no seed" for Note::exprSeed).
+inline uint64_t mixSeed (uint64_t a, uint64_t b)
+{
+    uint64_t z = a * 0x9E3779B97F4A7C15ull + b + 0x7F4A7C159E3779B9ull;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    z ^= z >> 31;
+    return z == 0 ? 1 : z;
+}
+
 } // namespace dmpe

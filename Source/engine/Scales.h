@@ -90,4 +90,19 @@ inline bool inScale (int pitch, int key, Scale s)
     return false;
 }
 
+// Semitones from `pitch` to the note `steps` scale steps away (negative = down). A chromatic pitch counts from its
+// scale neighbours; the walk stops after an octave.
+inline int stepOffset (int pitch, int key, Scale s, int steps)
+{
+    const int dir = steps < 0 ? -1 : 1;
+    int q = pitch, found = 0;
+    while (found < std::abs (steps) && std::abs (q - pitch) < 12)
+    {
+        q += dir;
+        if (inScale (q, key, s))
+            ++found;
+    }
+    return q - pitch;
+}
+
 } // namespace dmpe::scales
