@@ -824,6 +824,123 @@ public:
 
 static HarmonyTests harmonyTests;
 
+class ChordTests : public juce::UnitTest
+{
+public:
+    ChordTests() : juce::UnitTest ("DarkMPE chords") {}
+
+    void runTest() override
+    {
+        beginTest ("Auto progression: tonic first, every phrase ends on a dominant, no chord twice in a row");
+        for (int seed = 1; seed <= 40; ++seed)
+            for (float darkness : { 0.0f, 0.5f, 1.0f })
+                for (auto len : { ChordLength::oneBar, ChordLength::twoBeats })
+                {
+                    HarmonyParams hp;
+                    hp.progression = Progression::autoSeed;
+                    hp.bars = 8;
+                    hp.chordLength = len;
+                    hp.seed = seed;
+                    hp.darkness = darkness;
+                    hp.scale = seed % 2 == 0 ? scales::Scale::naturalMinor : scales::Scale::phrygian;
+                    const auto rs = generateProgression (hp);
+                    const juce::String what = "seed " + juce::String (seed) + " darkness " + juce::String (darkness);
+                    expectEquals (juce::String (chordSymbol (rs.front())), juce::String ("Am"), what);
+
+                    // dominants of A minor: v / V (E), bVII (G), vii dim (G#), bII (Bb), #iv (D#), iii (C#)
+                    const std::set<int> dominants { 4, 7, 8, 10, 3, 1 };
+                    auto rootPc = [&] (const Region& r) { return scales::mod (r.pitches.front(), 12); };
+                    expect (dominants.count (rootPc (rs.back())) != 0, what + ": the loop must lead home, got " + chordSymbol (rs.back()));
+                    if (rs.size() >= 8)
+                        expect (dominants.count (rootPc (rs[rs.size() / 2 - 1])) != 0, what + ": half cadence");
+                    for (size_t i = 1; i < rs.size(); ++i)
+                        expect (rs[i].pitches != rs[i - 1].pitches || rs[i].bassPc != rs[i - 1].bassPc, what + ": repeated chord");
+                }
+
+        beginTest ("Colours belong to the chord: a chord that comes back keeps its colours");
+        {
+            HarmonyParams hp;
+            hp.progression = Progression::mediantChain; // i bvi i iii
+            auto rs = generateProgression (hp);
+            colourRegions (rs, 1.0f, 0.6f, 9);
+            expect (rs[0].pitches == rs[2].pitches, "both i chords must get the same colours");
+            expect (rs[0].pitches.size() > 3);
+        }
+
+        beginTest ("The loop comes round: every morphing voice arrives on its first note");
+        for (auto motion : { Motion::morph, Motion::counterline, Motion::ripple, Motion::shimmer })
+        {
+            HarmonyParams hp;
+            hp.progression = Progression::epicMinor;
+            CineParams cp;
+            cp.motion = motion;
+            cp.reharm = Reharm::off;
+            cp.stagger = 0.0f;
+            cp.voices = 4;
+            const auto out = cinematicRegions (generateProgression (hp), 16.0, cp, hp.key);
+            std::map<int, float> first, last;
+            for (const auto& n : out.notes)
+            {
+                if (n.start < 1.0e-9)
+                    first[n.voiceIndex] = (float) n.pitch + evalCurve (n.bend, 0.0, 0.0f);
+                if (n.end() > 16.0 - 1.0e-6)
+                    last[n.voiceIndex] = (float) n.pitch + evalCurve (n.bend, n.length - 0.004, 0.0f);
+            }
+            expectEquals ((int) first.size(), (int) last.size());
+            for (const auto& [k, pitch] : first)
+                expectWithinAbsoluteError (last[k], pitch, 0.35f, juce::String (motionNames[(int) motion]) + ": voice " + juce::String (k) + " must glide into the loop start");
+        }
+
+        beginTest ("Counterline sings, Ripple dips every voice, Shimmer spreads the voices");
+        {
+            HarmonyParams hp;
+            hp.progression = Progression::harmonicDominant;
+            CineParams cp;
+            cp.reharm = Reharm::off;
+            cp.voices = 5;
+            cp.stagger = 0.0f;
+            auto plain = cinematicRegions (generateProgression (hp), 16.0, cp, hp.key);
+            auto voiceAt = [] (const Phrase& ph, int k, double t)
+            {
+                for (const auto& n : ph.notes)
+                    if (n.voiceIndex == k && t >= n.start && t < n.end())
+                        return (float) n.pitch + evalCurve (n.bend, t - n.start, 0.0f);
+                return 0.0f;
+            };
+
+            cp.motion = Motion::counterline;
+            const auto counter = cinematicRegions (generateProgression (hp), 16.0, cp, hp.key);
+            std::set<int> offsets;
+            for (double t = 4.0; t < 8.0; t += 0.05)
+                offsets.insert ((int) std::lround (voiceAt (counter, 4, t) - voiceAt (plain, 4, t)));
+            expectGreaterOrEqual ((int) offsets.size(), 2, "the top voice must move by steps");
+
+            cp.motion = Motion::ripple;
+            const auto ripple = cinematicRegions (generateProgression (hp), 16.0, cp, hp.key);
+            for (int k = 0; k < 5; ++k)
+            {
+                float lowest = 0.0f;
+                for (double t = 0.0; t < 4.0; t += 0.02)
+                    lowest = std::min (lowest, voiceAt (ripple, k, t) - voiceAt (plain, k, t));
+                expect (lowest <= -0.9f && lowest >= -2.1f, "voice " + juce::String (k) + " must dip a scale step");
+            }
+
+            cp.motion = Motion::shimmer;
+            const auto shimmer = cinematicRegions (generateProgression (hp), 16.0, cp, hp.key);
+            float spreadTop = 0.0f, spreadBottom = 0.0f;
+            for (double t = 2.0; t < 3.2; t += 0.05)
+            {
+                spreadTop += voiceAt (shimmer, 4, t) - voiceAt (plain, 4, t);
+                spreadBottom += voiceAt (shimmer, 0, t) - voiceAt (plain, 0, t);
+            }
+            expectGreaterThan (spreadTop, 0.0f, "the top voice drifts up");
+            expectLessThan (spreadBottom, 0.0f, "the bottom voice drifts down");
+        }
+    }
+};
+
+static ChordTests chordTests;
+
 class KitTests : public juce::UnitTest
 {
 public:
@@ -1826,7 +1943,7 @@ int main (int argc, char** argv)
 
     juce::UnitTestRunner runner;
     runner.setAssertOnFailure (false);
-    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &harmonyTests, &kitTests, &formTests, &renderTests, &expressionTests, &gestureTests });
+    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &harmonyTests, &kitTests, &formTests, &renderTests, &expressionTests, &gestureTests, &chordTests });
 
     int failures = 0;
     for (int i = 0; i < runner.getNumResults(); ++i)

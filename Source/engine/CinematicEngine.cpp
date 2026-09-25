@@ -294,14 +294,26 @@ Phrase cinematicRegions (std::vector<Region> regions, double lengthBeats, const 
     vp.voiceLeading = true;
 
     std::vector<std::vector<int>> slots;
-    for (const auto& r : regions)
+    auto voiceAll = [&] (const std::vector<int>* before)
     {
-        Chord c;
-        c.start = r.start;
-        c.length = r.length;
-        c.pitches = r.pitches;
-        c.bassPc = r.bassPc;
-        slots.push_back (voiceChordSlots (c, vp, slots.empty() ? nullptr : &slots.back()));
+        slots.clear();
+        for (const auto& r : regions)
+        {
+            Chord c;
+            c.start = r.start;
+            c.length = r.length;
+            c.pitches = r.pitches;
+            c.bassPc = r.bassPc;
+            slots.push_back (voiceChordSlots (c, vp, slots.empty() ? before : &slots.back()));
+        }
+    };
+    voiceAll (nullptr);
+    // The loop comes round: voice it again starting from where it ends, so the first chord follows the last one
+    // (no leap at the repeat). Deep Note grows its first chord out of a cluster instead.
+    if (regions.size() > 1 && p.motion != Motion::deepNote)
+    {
+        const auto last = slots.back();
+        voiceAll (&last);
     }
 
     // Sub: one more voice an octave under the bass, following it.
@@ -336,8 +348,11 @@ Phrase cinematicRegions (std::vector<Region> regions, double lengthBeats, const 
 
     const StepContext steps { p.key, p.scale };
     std::vector<Note> notes;
+    const bool morphLike = p.motion == Motion::morph || p.motion == Motion::deepNote || p.motion == Motion::counterline
+                        || p.motion == Motion::ripple || p.motion == Motion::shimmer;
+    const bool loops = regions.size() > 1 && regions.back().start + regions.back().length >= lengthBeats - 1.0e-6;
 
-    if (p.motion == Motion::morph || p.motion == Motion::deepNote)
+    if (morphLike)
     {
         for (int k = 0; k < n; ++k)
         {
@@ -379,8 +394,20 @@ Phrase cinematicRegions (std::vector<Region> regions, double lengthBeats, const 
                 offset = target;
             }
 
+            // The loop comes round: glide into the first chord's note, arriving as the loop restarts.
             const auto& last = regions.back();
-            cur.length = last.start + last.length - cur.start;
+            const double end = last.start + last.length;
+            if (loops && p.motion != Motion::deepNote)
+            {
+                const int to = slots.front()[(size_t) k];
+                if (to != slots.back()[(size_t) k] && std::abs (to - cur.pitch) <= 24)
+                {
+                    const double dur = std::max (0.05, (double) p.glide * std::min (last.length, regions.front().length));
+                    const double t0 = std::max (end - dur + lag[(size_t) k] * dur * 0.4, last.start + 0.02);
+                    addTransition (cur.bend, t0 - cur.start, end - 0.01 - cur.start, offset, (float) (to - cur.pitch), p.shape, cur.pitch, &steps);
+                }
+            }
+            cur.length = end - cur.start;
             notes.push_back (cur);
         }
 
@@ -442,9 +469,10 @@ Phrase cinematicRegions (std::vector<Region> regions, double lengthBeats, const 
                     hit.pitch = slots[r][(size_t) k];
                     hit.accent = step % 4 == 0;
                     hit.bend.push_back ({ 0.0, 0.0f });
-                    if (firstHit && r > 0)
+                    if (firstHit && (r > 0 || loops))
                     {
-                        const float from = (float) std::clamp (slots[r - 1][(size_t) k] - hit.pitch, -24, 24);
+                        const auto& before = r > 0 ? slots[r - 1] : slots.back(); // the loop comes round
+                        const float from = (float) std::clamp (before[(size_t) k] - hit.pitch, -24, 24);
                         if (std::abs (from) > 0.0f)
                         {
                             hit.bend.front().v = from;
@@ -507,8 +535,86 @@ Phrase cinematicRegions (std::vector<Region> regions, double lengthBeats, const 
     for (const auto& s : slots)
         topPitch = std::max (topPitch, *std::max_element (s.begin(), s.end()));
 
-    const bool spanning = p.motion == Motion::morph || p.motion == Motion::deepNote;
+    const bool spanning = morphLike;
     const float fallDepth = p.fall > 0.0f ? 1.0f + 4.0f * p.fall : 0.0f;
+
+    // ---- per-voice motion of Counterline / Ripple / Shimmer, in absolute beats (added to the voices' bends)
+    std::vector<Curve> extra ((size_t) n);
+    if (p.motion == Motion::counterline && n > 0)
+    {
+        // The top voice sings: two to four moves by scale step inside every chord, back on its chord tone before
+        // the change.
+        const int top = n - 1;
+        Rng cr ((uint64_t) p.seed * 7507ull + 71ull);
+        static const int figureSteps[] = { 1, 2, -1, 1, 3, -2, 2, -1 };
+        auto& c = extra[(size_t) top];
+        c.push_back ({ 0.0, 0.0f });
+        for (size_t r = 0; r < regions.size(); ++r)
+        {
+            const auto& reg = regions[r];
+            if (reg.length < 0.99)
+                continue;
+            const int base = slots[r][(size_t) top];
+            const int moves = std::min (2 + cr.range (0, reg.length >= 3.9 ? 2 : 1), (int) std::floor (reg.length * 2.0));
+            const double t0 = reg.start + 0.2 * reg.length, t1 = reg.start + 0.85 * reg.length;
+            const double seg = (t1 - t0) / (double) moves;
+            float cur = 0.0f;
+            int pick = cr.range (0, 7);
+            for (int m = 0; m < moves; ++m)
+            {
+                float target = 0.0f;
+                if (m < moves - 1)
+                {
+                    target = (float) scales::stepOffset (base, p.key, p.scale, figureSteps[(size_t) pick % 8]);
+                    pick += 1 + cr.range (0, 2);
+                }
+                const double a = t0 + seg * m;
+                if (std::abs (target - cur) > 1.0e-3f)
+                    addTransition (c, a, a + std::min (0.12, seg * 0.35), cur, target, GlideShape::ease);
+                cur = target;
+            }
+        }
+    }
+    else if (p.motion == Motion::ripple)
+    {
+        // Every voice dips a scale step and comes back, one after another from the bass up.
+        for (int k = 0; k < n; ++k)
+        {
+            auto& c = extra[(size_t) k];
+            c.push_back ({ 0.0, 0.0f });
+            const float pos = n > 1 ? (float) k / (float) (n - 1) : 0.0f;
+            for (size_t r = 0; r < regions.size(); ++r)
+            {
+                const auto& reg = regions[r];
+                const float dip = (float) scales::stepOffset (slots[r][(size_t) k], p.key, p.scale, -1);
+                const double start = reg.start + reg.length * (0.3 + 0.35 * pos);
+                const double go = std::min (0.1, reg.length * 0.05), hold = reg.length * 0.08;
+                addTransition (c, start, start + go, 0.0f, dip, GlideShape::ease);
+                addTransition (c, start + go + hold, start + 2.0 * go + hold, dip, 0.0f, GlideShape::ease);
+            }
+        }
+    }
+    else if (p.motion == Motion::shimmer)
+    {
+        // The voices drift apart (up to a quarter tone at the edges) with their own slow vibrato, and close up
+        // again as the chord changes.
+        Rng sr ((uint64_t) p.seed * 3001ull + 17ull);
+        for (int k = 0; k < n; ++k)
+        {
+            auto& c = extra[(size_t) k];
+            const float pos = n > 1 ? (float) k / (float) (n - 1) * 2.0f - 1.0f : 0.0f;
+            const double rate = 1.1 + 0.8 * sr.uniform(), phase = sr.uniform();
+            const float spread = (0.1f + 0.25f * p.swell) * pos;
+            const float vib = 0.05f + 0.08f * p.swell;
+            for (double t = 0.0; t <= lengthBeats + 1.0e-9; t += 1.0 / 16.0)
+            {
+                const auto& reg = regions[regionAt (regions, t)];
+                const float x = (float) ((t - reg.start) / std::max (0.25, reg.length));
+                const float env = smoothstep (0.0f, 0.6f, x) * (1.0f - smoothstep (0.85f, 1.0f, x));
+                c.push_back ({ t, env * (spread + vib * (float) std::sin (6.283185307 * (rate * t + phase))) });
+            }
+        }
+    }
     const double phraseLen = std::max (1.0, lengthBeats);
 
     // Suspension offset of voice k at absolute time `abs` (resolves between 35% and 60% of the chord).
@@ -547,8 +653,19 @@ Phrase cinematicRegions (std::vector<Region> regions, double lengthBeats, const 
                         && (p.motion != Motion::pulse || note.end() > regionEnd - 0.26);
         const double fallLen = std::min (0.5, 0.18 * len);
 
+        auto times = sampleTimes (note.bend, len);
+        const auto& voiceMotion = extra[(size_t) std::clamp (k, 0, n - 1)];
+        if (! voiceMotion.empty())
+        {
+            for (const auto& pt : voiceMotion)
+                if (pt.t > note.start && pt.t < note.start + len)
+                    times.push_back (pt.t - note.start);
+            std::sort (times.begin(), times.end());
+            times.erase (std::unique (times.begin(), times.end(), [] (double a, double b) { return b - a < 1.0e-6; }), times.end());
+        }
+
         Curve bend, slide, pressure;
-        for (const double t : sampleTimes (note.bend, len))
+        for (const double t : times)
         {
             const double abs = note.start + t;
             const auto& region = regions[regionAt (regions, abs)];
@@ -556,7 +673,8 @@ Phrase cinematicRegions (std::vector<Region> regions, double lengthBeats, const 
             const float arcGain = 1.0f - p.arc * 0.55f * (1.0f - smoothstep (0.0f, 1.0f, (float) (abs / phraseLen)));
             const float fx = falls ? (float) std::clamp ((t - (len - fallLen)) / fallLen, 0.0, 1.0) : 0.0f;
 
-            float b = evalCurve (note.bend, t, 0.0f) + suspension (k, abs, spanning && note.length > region.length + 1.0e-6);
+            float b = evalCurve (note.bend, t, 0.0f) + suspension (k, abs, spanning && note.length > region.length + 1.0e-6)
+                    + evalCurve (voiceMotion, abs, 0.0f);
             if (isTop && x > 0.35f && region.length >= 2.0)
             {
                 const float depth = (0.05f + 0.12f * p.swell) * (0.7f + 0.6f * p.arc * (float) (abs / phraseLen));

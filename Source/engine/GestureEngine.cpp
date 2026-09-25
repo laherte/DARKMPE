@@ -86,14 +86,7 @@ uint64_t seedOf (const Note& n, const GestureParams& p, uint64_t salt)
 // Semitones to the note `steps` scale steps away in direction `dir` (a chromatic note counts from its neighbours).
 int scaleNeighbour (int pitch, int dir, int steps, const GestureParams& p)
 {
-    int q = pitch, found = 0;
-    while (found < steps && std::abs (q - pitch) < 12)
-    {
-        q += dir;
-        if (scales::inScale (q, p.key, p.scale))
-            ++found;
-    }
-    return q - pitch;
+    return scales::stepOffset (pitch, p.key, p.scale, dir * steps);
 }
 
 bool isAnswer (const Note& n)

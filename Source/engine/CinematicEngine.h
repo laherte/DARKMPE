@@ -18,9 +18,13 @@ enum class Motion
     deepNote,    // the first chord grows out of a drifting random cluster, then morph
     pulse,       // chords re-struck in a euclidean 16th pattern, sliding on the changes
     tensionRise, // voices stretch apart (top up, bass down) towards every change
+    counterline, // morph, and the top voice sings a counter-melody of scale steps by bend inside every chord
+    ripple,      // morph, and the voices dip a scale step one after another, bass to top, in every chord
+    shimmer,     // morph, and the voices drift apart in cents with their own vibrato, closing up on the change
     count
 };
-inline const char* const motionNames[] = { "Morph", "Bloom", "Collapse", "Breathe", "Deep Note", "Pulse", "Tension Rise" };
+inline const char* const motionNames[] = { "Morph", "Bloom", "Collapse", "Breathe", "Deep Note", "Pulse", "Tension Rise",
+                                           "Counterline", "Ripple", "Shimmer" };
 
 enum class Reharm
 {
