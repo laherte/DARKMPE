@@ -1798,15 +1798,44 @@ static int renderExamples (const juce::File& inDir, const juce::File& outDir)
         write (renderMpe (p), name, p.notes.size());
     };
 
+    // The plugin's default gestures (Auto: the style's profile).
+    auto gestures = [] (const GenParams& gp)
+    {
+        GestureParams g;
+        g.key = gp.key;
+        g.scale = gp.scale;
+        g.style = gp.style;
+        g.seed = gp.seed;
+        return g;
+    };
+
     for (int s = 0; s < (int) Style::count; ++s)
     {
         GenParams gp;
         gp.style = (Style) s;
         gp.seed = 666 + s;
         auto lead = generateMelody (gp);
+        applyGestures (lead, gestures (gp), GestureRole::lead);
         save (lead, juce::String ("Lead - ") + styleNames[s]);
         shapeExpression (lead, {});
         write (renderMono (lead, 12, true), juce::String ("Lead - ") + styleNames[s] + " (Mono, bend 12)", lead.notes.size());
+    }
+
+    // Every gesture profile on the same Pursuit lead (8 bars).
+    for (int prof = 0; prof < (int) GestureProfile::count - 1; ++prof)
+    {
+        GenParams gp;
+        gp.style = Style::pursuit;
+        gp.seed = 666;
+        gp.bars = 8;
+        gp.gate = 0.75f;
+        auto lead = generateMelody (gp);
+        auto g = gestures (gp);
+        g.profile = (GestureProfile) prof;
+        g.amount = 0.6f;
+        g.riff = 0.5f;
+        applyGestures (lead, g, GestureRole::lead);
+        save (lead, juce::String ("Gesture - Pursuit - ") + gestureProfileNames[prof]);
     }
 
     // Phrase forms: the same seed as classic, as A B A C / period / sentence / sequence (8 bars).
@@ -1817,7 +1846,9 @@ static int renderExamples (const juce::File& inDir, const juce::File& outDir)
         gp.seed = 666;
         gp.bars = 8;
         gp.form = form;
-        save (generateMelody (gp), juce::String ("Form - Lead Pursuit - ") + formNames[(int) form]);
+        auto lead = generateMelody (gp);
+        applyGestures (lead, gestures (gp), GestureRole::lead);
+        save (lead, juce::String ("Form - Lead Pursuit - ") + formNames[(int) form]);
     }
 
     struct Showcase { const char* name; Progression prog; Motion motion; Reharm reharm; VoicingMode voicing; GlideShape shape;
@@ -1833,6 +1864,9 @@ static int renderExamples (const juce::File& inDir, const juce::File& outDir)
         { "Harmonic Dominant - Breathe",   Progression::harmonicDominant, Motion::breathe,     Reharm::chromaticApproach, VoicingMode::hyperSpread, GlideShape::ease,     0.4f,  0.6f, 0.4f, false, ChordLength::oneBar },
         { "Auto - Planing Morph",          Progression::autoSeed,         Motion::morph,       Reharm::planing,           VoicingMode::gothic,      GlideShape::swoopOut, 0.3f,  0.8f, 0.0f, true,  ChordLength::oneBar },
         { "Neapolitan - Tritone Approach", Progression::neapolitan,       Motion::morph,       Reharm::tritoneApproach,   VoicingMode::epicSpread,  GlideShape::ease,     0.3f,  0.7f, 0.3f, true,  ChordLength::oneBar },
+        { "Epic Minor - Counterline",      Progression::epicMinor,        Motion::counterline, Reharm::suspensions,       VoicingMode::epicSpread,  GlideShape::ease,     0.3f,  0.5f, 0.0f, true,  ChordLength::oneBar },
+        { "Lament Bass - Ripple",          Progression::lamentBass,       Motion::ripple,      Reharm::off,               VoicingMode::gothic,      GlideShape::ease,     0.35f, 0.7f, 0.0f, true,  ChordLength::oneBar },
+        { "Auto - Shimmer",                Progression::autoSeed,         Motion::shimmer,     Reharm::off,               VoicingMode::epicSpread,  GlideShape::swoopOut, 0.4f,  0.6f, 0.0f, true,  ChordLength::twoBars },
     };
     int index = 1;
     for (const auto& s : shows)
@@ -1872,6 +1906,17 @@ static int renderExamples (const juce::File& inDir, const juce::File& outDir)
     kp.pad.tension = 0.35f;
     for (auto& part : generateKit (kp))
     {
+        const auto g = gestures (kp.gen);
+        switch (part.layer)
+        {
+            case Layer::lead:  applyGestures (part.phrase, g, GestureRole::lead); break;
+            case Layer::bass:  applyGestures (part.phrase, g, GestureRole::bass); break;
+            case Layer::arp:   applyGestures (part.phrase, g, GestureRole::arp); break;
+            case Layer::stab:  applyGestures (part.phrase, g, GestureRole::chord); break;
+            case Layer::siren:
+            case Layer::pad:
+            case Layer::count: break;
+        }
         shapeExpression (part.phrase, {});
         if (part.layer == Layer::bass)
             write (renderMono (part.phrase, 12, true), "Kit - Pursuit A Phrygian - Bass (Mono, bend 12)", part.phrase.notes.size());
