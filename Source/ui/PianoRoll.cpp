@@ -73,10 +73,12 @@ void PianoRoll::drawStatic (juce::Graphics& g)
     g.fillAll (bg());
 
     auto area = getLocalBounds().toFloat().reduced (1.0f);
-    const float laneH = 44.0f;
+    const float laneH = 38.0f;
     auto pressureLane = area.removeFromBottom (laneH);
     area.removeFromBottom (4.0f);
     auto slideLane = area.removeFromBottom (laneH);
+    area.removeFromBottom (4.0f);
+    auto bendLane = area.removeFromBottom (54.0f);
     area.removeFromBottom (6.0f);
     auto roll = area;
     rollArea = roll;
@@ -84,8 +86,10 @@ void PianoRoll::drawStatic (juce::Graphics& g)
 
     g.setColour (panel());
     g.fillRect (roll);
+    g.fillRect (bendLane);
     g.fillRect (slideLane);
     g.fillRect (pressureLane);
+    drawBendGrid (g, bendLane);
 
     if (shown == nullptr)
         return;
@@ -147,7 +151,7 @@ void PianoRoll::drawStatic (juce::Graphics& g)
     for (int b = 0; b <= (int) L; ++b)
     {
         g.setColour (b % 4 == 0 ? grid().brighter (0.4f) : grid());
-        for (auto* r : { &roll, &slideLane, &pressureLane })
+        for (auto* r : { &roll, &bendLane, &slideLane, &pressureLane })
             g.drawVerticalLine ((int) xOf (b, *r), r->getY(), r->getBottom());
     }
 
@@ -209,6 +213,20 @@ void PianoRoll::drawStatic (juce::Graphics& g)
         };
         lane (n.slide, slideLane, slideCol());
         lane (n.pressure, pressureLane, pressureCol());
+
+        // Bend in cents: detune offsets, drift and vibrato are visible here, gestures and glides reach the edges.
+        if (! n.bend.empty())
+        {
+            const float mid = bendLane.getCentreY(), half = bendLane.getHeight() * 0.5f - 1.0f;
+            juce::Path path;
+            path.startNewSubPath (xOf (n.start + n.bend.front().t, bendLane), mid - bendAxis (n.bend.front().v) * half);
+            for (const auto& pt : n.bend)
+                path.lineTo (xOf (n.start + pt.t, bendLane), mid - bendAxis (pt.v) * half);
+            if (n.bend.size() == 1)
+                path.lineTo (xOf (n.end(), bendLane), mid - bendAxis (n.bend.front().v) * half);
+            g.setColour (bendCol().withAlpha (0.9f));
+            g.strokePath (path, juce::PathStrokeType (1.0f));
+        }
     }
 
     // phrase form: A / B / C... at the start of each section
@@ -226,6 +244,8 @@ void PianoRoll::drawStatic (juce::Graphics& g)
     }
 
     g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+    g.setColour (bendCol());
+    g.drawText ("BEND (cents / st)", bendLane.reduced (4, 2), juce::Justification::topLeft);
     g.setColour (slideCol());
     g.drawText ("SLIDE / CC74", slideLane.reduced (4, 2), juce::Justification::topLeft);
     g.setColour (pressureCol());

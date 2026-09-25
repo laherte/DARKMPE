@@ -106,7 +106,8 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
       previewToggle (p.apvts, "preview", "Preview"),
       formChoice (p.apvts, "form", "Phrase Form"),
       roll (p),
-      monitor (p)
+      monitor (p),
+      scope (p)
 {
     setLookAndFeel (&lnf);
     addAndMakeVisible (content);
@@ -203,6 +204,7 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     content.addAndMakeVisible (status);
     content.addAndMakeVisible (roll);
     content.addAndMakeVisible (monitor);
+    content.addAndMakeVisible (scope);
 
     auto knob = [&] (auto& list, const char* id, const char* label) { list.push_back (std::make_unique<Knob> (s, id, label)); };
     auto choice = [&] (auto& list, const char* id, const char* label) { list.push_back (std::make_unique<Choice> (s, id, label)); };
@@ -615,7 +617,7 @@ void DarkMPEEditor::layoutContent()
     status.setBounds (bar.reduced (8, 0));
 
     r.removeFromTop (4);
-    roll.setBounds (r.removeFromTop (282));
+    roll.setBounds (r.removeFromTop (330));
     r.removeFromTop (4);
     monitor.setBounds (r.removeFromTop (56));
     r.removeFromTop (8);
@@ -647,7 +649,9 @@ void DarkMPEEditor::layoutContent()
     flow (genControls, inner (modeArea));
     flow (voiceControls, inner (modeArea));
     flow (cineControls, inner (modeArea));
-    flow (exprControls, inner (exprArea));
+    auto exprInner = inner (exprArea);
+    scope.setBounds (exprInner.removeFromBottom (78));
+    flow (exprControls, exprInner);
     flow (outControls, inner (outArea));
 
     // KIT: shared choices, then one row per layer.

@@ -25,7 +25,7 @@ void MpeMonitor::timerCallback()
         if (ch == 1 && ! proc.isHostMono())
             continue;
         now[i++] = note;
-        now[i++] = note < 0 ? 0 : (int) std::lround (m.bend.load (std::memory_order_relaxed) * 20.0f);
+        now[i++] = note < 0 ? 0 : (int) std::lround (m.bend.load (std::memory_order_relaxed) * 200.0f); // 0.5 cent
         now[i++] = note < 0 ? 0 : (int) std::lround (m.slide.load (std::memory_order_relaxed) * 48.0f)
                                   + 100 * (int) std::lround (m.pressure.load (std::memory_order_relaxed) * 48.0f);
     }
@@ -82,19 +82,26 @@ void MpeMonitor::paint (juce::Graphics& g)
         if (! on)
             continue;
 
-        // bend: bar from the centre line, +-12 semitones full scale, value in semitones
+        // bend: two bars from the centre line, coarse (+-12 semitones, white) and fine (+-1 semitone, violet:
+        // detune and vibrato move it), and the value (cents below a semitone)
         const float bend = m.bend.load (std::memory_order_relaxed);
         auto bendArea = cell.removeFromTop (cell.getHeight() * 0.55f).reduced (3.0f, 1.0f);
         const float mid = bendArea.getCentreY();
-        const float h = juce::jlimit (-1.0f, 1.0f, bend / 12.0f) * bendArea.getHeight() * 0.5f;
+        const float half = bendArea.getHeight() * 0.5f;
+        const float coarse = juce::jlimit (-1.0f, 1.0f, bend / 12.0f) * half;
+        const float fine = juce::jlimit (-1.0f, 1.0f, bend) * half;
         g.setColour (grid());
         g.drawHorizontalLine ((int) mid, bendArea.getX(), bendArea.getRight());
         g.setColour (juce::Colours::white);
-        g.fillRect (juce::Rectangle<float> (bendArea.getX() + bendArea.getWidth() * 0.3f, std::min (mid, mid - h),
-                                            bendArea.getWidth() * 0.4f, std::max (1.0f, std::abs (h))));
+        g.fillRect (juce::Rectangle<float> (bendArea.getX() + bendArea.getWidth() * 0.12f, std::min (mid, mid - coarse),
+                                            bendArea.getWidth() * 0.3f, std::max (1.0f, std::abs (coarse))));
+        g.setColour (bendCol());
+        g.fillRect (juce::Rectangle<float> (bendArea.getX() + bendArea.getWidth() * 0.5f, std::min (mid, mid - fine),
+                                            bendArea.getWidth() * 0.18f, std::max (1.0f, std::abs (fine))));
         g.setFont (juce::FontOptions (8.0f));
         g.setColour (textDim());
-        g.drawText (juce::String (bend, 1), bendArea, juce::Justification::bottomRight);
+        const auto value = std::abs (bend) < 1.0f ? juce::String (juce::roundToInt (bend * 100.0f)) + "c" : juce::String (bend, 1);
+        g.drawText (value, bendArea, juce::Justification::bottomRight);
 
         // slide + pressure meters
         auto meters = cell.reduced (3.0f, 2.0f);

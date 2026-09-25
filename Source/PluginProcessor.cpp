@@ -3,6 +3,7 @@
 
 #include "engine/MidiFileIO.h"
 #include "engine/Humanize.h"
+#include "engine/Rng.h"
 #include "presets/Presets.h"
 #include "engine/MpeRenderer.h"
 
@@ -406,6 +407,44 @@ HarmonyParams DarkMPEProcessor::readHarmonyParams() const
     h.darkness = pf (ids::cDark);
     h.seed = (int) apvts.state.getProperty ("seed", 1);
     return h;
+}
+
+// ------------------------------------------------------------------ expression preview
+const juce::StringArray& DarkMPEProcessor::expressionParamIds()
+{
+    static const juce::StringArray list { ids::glideTime, ids::glideCurve, ids::detune, ids::vibDepth, ids::vibRate, ids::vibDelay,
+                                          ids::slideAmt, ids::slideSpread, ids::pressAmt, ids::breath };
+    return list;
+}
+
+Phrase DarkMPEProcessor::expressionDemo() const
+{
+    // A pickup, a glide into a held note (glide, vibrato, detune drift), a short note and a closing note.
+    Phrase p;
+    p.lengthBeats = 4.0;
+    auto add = [&p] (double start, double length, int pitch, int from)
+    {
+        Note n;
+        n.start = start;
+        n.length = length;
+        n.pitch = pitch;
+        n.glideFrom = from;
+        n.velocity = 0.8f;
+        n.exprSeed = mixSeed (4242, (uint64_t) std::lround (start * 64.0) + 1);
+        p.notes.push_back (n);
+    };
+    add (0.0, 0.5, 60, -1);
+    add (0.5, 2.0, 63, 60);
+    add (2.5, 0.5, 62, -1);
+    add (3.0, 0.98, 60, -1);
+    shapeExpression (p, readExprParams());
+    return p;
+}
+
+juce::String DarkMPEProcessor::describeExpression() const
+{
+    return "vib " + juce::String (pf (ids::vibDepth), 2) + " st, " + juce::String (pf (ids::vibRate), 1) + "/beat after "
+         + juce::String (pf (ids::vibDelay), 2) + "  -  detune " + juce::String (juce::roundToInt (pf (ids::detune))) + " c";
 }
 
 DarkMPEProcessor::Mode DarkMPEProcessor::getMode() const

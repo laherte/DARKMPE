@@ -53,6 +53,13 @@ struct Note
     // Generators give notes of repeated sections the same seed, so a section comes back identical; 0 = none.
     uint64_t exprSeed = 0;
 
+    // Authored motion (GestureEngine), layered by ExpressionShaper on top of what it generates. Beats from the note start.
+    Curve gesture;              // pitch, semitones added to the bend
+    Curve gestureTimbre;        // CC74 offset, added (-1..1)
+    Curve gesturePress;         // pressure gain (empty = 1)
+    bool glideAuthored = false; // the gesture curve already contains the glide-in from glideFrom
+    float vibrato = 1.0f;       // vibrato depth scale (0 while a riff / trill owns the pitch, > 1 on held notes)
+
     // MPE expression (filled by ExpressionShaper).
     Curve bend;     // semitones relative to pitch
     Curve slide;    // CC74 0..1

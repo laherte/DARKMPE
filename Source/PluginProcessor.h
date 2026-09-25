@@ -102,6 +102,12 @@ public:
     juce::String getSourceName() const { return sourceName; }
     juce::String getHarmonyText() const { return harmonyText; } // chord symbols of the cinematic output
 
+    // Expression panel preview: a short demo phrase shaped with the current settings, the parameters it depends
+    // on, and a one-line summary (e.g. "vib 0.20 st, 1.5/beat after 0.5  -  detune 8 c").
+    dmpe::Phrase expressionDemo() const;
+    static const juce::StringArray& expressionParamIds();
+    juce::String describeExpression() const;
+
     // Presets: factory (also the host's programs) and user files (~/Music/DarkMPE/Presets/*.dmpreset).
     juce::String getPresetName() const;
     bool saveUserPreset (const juce::File& file);

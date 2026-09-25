@@ -1292,6 +1292,112 @@ public:
 
 static RenderTests renderTests;
 
+class ExpressionTests : public juce::UnitTest
+{
+public:
+    ExpressionTests() : juce::UnitTest ("DarkMPE expression") {}
+
+    static Note single (double start, double length, int pitch, uint64_t seed)
+    {
+        Note n;
+        n.start = start;
+        n.length = length;
+        n.pitch = pitch;
+        n.exprSeed = seed;
+        return n;
+    }
+
+    void runTest() override
+    {
+        beginTest ("Vibrato: a 1-beat note sings at the set depth, 16ths don't");
+        {
+            Phrase p;
+            p.lengthBeats = 4.0;
+            p.notes = { single (0.0, 2.0, 60, 11), single (2.0, 1.0, 64, 13), single (3.0, 0.2, 62, 12) };
+            ExprParams ep;
+            ep.detuneCents = 0.0f;
+            ep.vibratoDepth = 0.3f;
+            shapeExpression (p, ep);
+            auto swing = [] (const Note& n)
+            {
+                float lo = 0.0f, hi = 0.0f;
+                for (const auto& pt : n.bend)
+                {
+                    lo = std::min (lo, pt.v);
+                    hi = std::max (hi, pt.v);
+                }
+                return std::pair { lo, hi };
+            };
+            const auto [lo, hi] = swing (p.notes[0]);
+            expectWithinAbsoluteError (hi, 0.3f, 0.03f, "vibrato must reach its depth");
+            expectWithinAbsoluteError (lo, -0.3f, 0.03f, "vibrato must reach its depth");
+            const auto [lo1, hi1] = swing (p.notes[1]);
+            expectGreaterThan (hi1 - lo1, 0.3f, "a 1-beat note must sing too");
+            for (const auto& pt : p.notes[2].bend)
+                expectWithinAbsoluteError (pt.v, 0.0f, 1.0e-6f, "a 16th has no vibrato");
+        }
+
+        beginTest ("Detune: every note of a single line has its own offset and drift, within the setting");
+        {
+            Phrase p;
+            p.lengthBeats = 16.0;
+            for (int i = 0; i < 16; ++i)
+                p.notes.push_back (single (i, 0.9, 60, 100 + (uint64_t) i));
+            ExprParams ep;
+            ep.detuneCents = 20.0f;
+            ep.vibratoDepth = 0.0f;
+            shapeExpression (p, ep);
+            std::set<int> offsets;
+            float widest = 0.0f, drift = 0.0f;
+            for (const auto& n : p.notes)
+            {
+                offsets.insert (juce::roundToInt (n.bend.front().v * 1000.0f));
+                float lo = 1.0f, hi = -1.0f;
+                for (const auto& pt : n.bend)
+                {
+                    widest = std::max (widest, std::abs (pt.v));
+                    lo = std::min (lo, pt.v);
+                    hi = std::max (hi, pt.v);
+                }
+                drift = std::max (drift, hi - lo);
+            }
+            expectGreaterThan ((int) offsets.size(), 10, "notes must be detuned differently");
+            expectLessOrEqual (widest, 0.2f * 0.5f + 0.2f * 0.3f + 1.0e-4f, "detune stays within the setting");
+            expectGreaterThan (drift, 0.01f, "detune drifts inside a note");
+
+            // The same seed gives the same detune (repeated sections).
+            Phrase q;
+            q.lengthBeats = 16.0;
+            q.notes = { single (8.0, 0.9, 60, 100) };
+            shapeExpression (q, ep);
+            expectWithinAbsoluteError (q.notes[0].bend.front().v, p.notes[0].bend.front().v, 1.0e-6f);
+        }
+
+        beginTest ("Gesture curves are layered on the generated expression");
+        {
+            Phrase p;
+            p.lengthBeats = 4.0;
+            auto n = single (0.0, 1.0, 60, 7);
+            n.gesture = { { 0.0, 0.0f }, { 0.25, 0.0f }, { 0.3, -2.0f }, { 0.6, -2.0f }, { 0.65, 0.0f } };
+            n.gestureTimbre = { { 0.0, 0.3f }, { 1.0, 0.0f } };
+            n.vibrato = 0.0f;
+            p.notes = { n };
+            ExprParams ep;
+            ep.detuneCents = 0.0f;
+            shapeExpression (p, ep);
+            const auto& out = p.notes[0];
+            expectWithinAbsoluteError (evalCurve (out.bend, 0.45, 0.0f), -2.0f, 1.0e-4f, "the dip must be in the bend");
+            expectWithinAbsoluteError (evalCurve (out.bend, 0.9, 0.0f), 0.0f, 1.0e-4f, "and come back");
+            bool hasCorner = false;
+            for (const auto& pt : out.bend)
+                hasCorner = hasCorner || std::abs (pt.t - 0.3) < 1.0e-9;
+            expect (hasCorner, "gesture points must be kept exactly");
+        }
+    }
+};
+
+static ExpressionTests expressionTests;
+
 static EngineTests engineTests;
 static CinematicTests cinematicTests;
 static MpeImportTests mpeImportTests;
@@ -1459,7 +1565,7 @@ int main (int argc, char** argv)
 
     juce::UnitTestRunner runner;
     runner.setAssertOnFailure (false);
-    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &harmonyTests, &kitTests, &formTests, &renderTests });
+    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &harmonyTests, &kitTests, &formTests, &renderTests, &expressionTests });
 
     int failures = 0;
     for (int i = 0; i < runner.getNumResults(); ++i)

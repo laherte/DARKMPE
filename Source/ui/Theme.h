@@ -12,6 +12,35 @@ inline juce::Colour textDim()     { return juce::Colour (0xff7a7c85); }
 inline juce::Colour accent()      { return juce::Colour (0xffe0162b); }
 inline juce::Colour slideCol()    { return juce::Colour (0xff4fc3d9); }
 inline juce::Colour pressureCol() { return juce::Colour (0xffe8a33d); }
+inline juce::Colour bendCol()     { return juce::Colour (0xffb28dff); }
+
+// Bend axis of the expression views: semitones -> -1..1. The middle 60% is linear over +-100 cents (detune and
+// vibrato are visible), the rest is logarithmic up to +-24 semitones (glides, falls, riffs).
+inline float bendAxis (float semitones)
+{
+    const float cents = std::abs (semitones) * 100.0f;
+    const float y = cents <= 100.0f ? 0.6f * cents / 100.0f : 0.6f + 0.4f * std::log (cents / 100.0f) / std::log (24.0f);
+    return std::copysign (std::min (1.0f, y), semitones);
+}
+
+// Draws the bend-axis grid (0, +-50 cents, +-1, +-12 semitones) with labels into a lane.
+inline void drawBendGrid (juce::Graphics& g, juce::Rectangle<float> lane)
+{
+    const float mid = lane.getCentreY(), half = lane.getHeight() * 0.5f - 1.0f;
+    g.setFont (juce::FontOptions (8.0f));
+    for (auto [semis, label] : { std::pair { 0.5f, "50c" }, { 1.0f, "1" }, { 12.0f, "12" } })
+        for (float sign : { 1.0f, -1.0f })
+        {
+            const float y = mid - sign * bendAxis (semis) * half;
+            g.setColour (grid().withAlpha (semis == 1.0f ? 1.0f : 0.6f));
+            g.drawHorizontalLine ((int) y, lane.getX(), lane.getRight());
+            g.setColour (textDim().withAlpha (0.8f));
+            g.drawText ((sign > 0 ? "+" : "-") + juce::String (label), juce::Rectangle<float> (lane.getRight() - 30.0f, y - 6.0f, 28.0f, 12.0f),
+                        juce::Justification::centredRight);
+        }
+    g.setColour (grid().brighter (0.5f));
+    g.drawHorizontalLine ((int) mid, lane.getX(), lane.getRight());
+}
 
 // KIT layers: Lead, Bass, Arp, Siren, Stab, Pad
 inline juce::Colour layerColour (int layer)
