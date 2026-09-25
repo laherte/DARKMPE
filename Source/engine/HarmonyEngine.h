@@ -1,6 +1,5 @@
 #pragma once
 
-#include "engine/PhraseForm.h"
 #include "engine/Scales.h"
 
 #include <string>
@@ -52,15 +51,12 @@ struct HarmonyParams
     ChordLength chordLength = ChordLength::oneBar;
     int bars = 4;
     float darkness = 0.5f;
-    Form form = Form::classic; // phrase form over groups of chords (A = the opening chords, C = a iv - V7 cadence)
     int seed = 1;
 };
 
-using SectionMarks = std::vector<std::pair<double, std::string>>; // start beat, section label
-
 // The chords of a progression, one region per chord, filling `bars` bars (the progression repeats).
-// With a form, the loop is split in four groups of chords (A, B, C...); `sections` receives where they start.
-std::vector<Region> generateProgression (const HarmonyParams& p, SectionMarks* sections = nullptr);
+// Phrase forms never touch the chords: they shape the melodic lines only.
+std::vector<Region> generateProgression (const HarmonyParams& p);
 
 // Adds colour tones: tension = how many per chord (0 = none), darkness = which ones
 // (0: 9 / 11 / 6 / maj7 ... 1: b9 / b13 / m(maj7) / #11). Deterministic for a seed.

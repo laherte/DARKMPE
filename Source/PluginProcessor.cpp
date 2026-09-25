@@ -404,7 +404,6 @@ HarmonyParams DarkMPEProcessor::readHarmonyParams() const
     h.chordLength = (ChordLength) pi (ids::cChordLen);
     h.bars = barChoices[std::clamp (pi (ids::bars), 0, 3)];
     h.darkness = pf (ids::cDark);
-    h.form = (Form) pi (ids::form);
     h.seed = (int) apvts.state.getProperty ("seed", 1);
     return h;
 }
@@ -500,10 +499,7 @@ void DarkMPEProcessor::rebuild()
         if (source.empty())
         {
             const auto hp = readHarmonyParams();
-            SectionMarks marks;
-            main = cinematicRegions (generateProgression (hp, &marks), hp.bars * 4.0, readCineParams(), hp.key, &used);
-            for (const auto& [beat, label] : marks)
-                r->sections.push_back ({ beat, juce::String (label) });
+            main = cinematicRegions (generateProgression (hp), hp.bars * 4.0, readCineParams(), hp.key, &used);
         }
         else
             main = cinematic (source, readCineParams(), &used);

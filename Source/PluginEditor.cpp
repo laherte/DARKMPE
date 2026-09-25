@@ -193,7 +193,8 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
         content.addAndMakeVisible (*b);
     content.addAndMakeVisible (previewToggle);
     content.addAndMakeVisible (formChoice);
-    formChoice.box.setTooltip ("Classic, or call & response: A B A C, A A B A, A A A B, period, sentence, sequence");
+    formChoice.box.setTooltip ("Phrase form of the melodic lines (lead, bass, arp): Classic, or call & response: "
+                               "A B A C, A A B A, A A A B, period, sentence, sequence. Chords are never changed by the form.");
     content.addAndMakeVisible (dragOut);
 
     status.setFont (juce::FontOptions (11.5f));
@@ -310,6 +311,20 @@ void DarkMPEEditor::timerCallback()
     if (proc.getMode() != shownMode)
         updateModeVisibility();
     updateSeedControls();
+    updateFormEnabled();
+}
+
+void DarkMPEEditor::updateFormEnabled()
+{
+    // The form shapes melodic lines only: nothing to shape in CINEMATIC, or when transforming a loaded file.
+    const auto mode = proc.getMode();
+    const bool melodic = mode == DarkMPEProcessor::Mode::generate || mode == DarkMPEProcessor::Mode::kit
+                      || (mode == DarkMPEProcessor::Mode::transform && ! proc.hasSource());
+    if (formChoice.isEnabled() != melodic)
+    {
+        formChoice.setEnabled (melodic);
+        formChoice.setAlpha (melodic ? 1.0f : 0.4f);
+    }
 }
 
 void DarkMPEEditor::updateSeedControls()
@@ -469,6 +484,7 @@ void DarkMPEEditor::updateModeVisibility()
     for (auto& c : kitControls) c->setVisible (kit);
     for (auto& r : layerRows) r->setVisible (kit);
     mutateBtn.setEnabled (gen || kit);
+    updateFormEnabled();
     if (xform && proc.hasSource())
         setStatus ("Source: " + proc.getSourceName() + "  -  " + proc.describeSource());
     if (cine || kit)

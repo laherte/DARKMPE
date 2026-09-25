@@ -926,6 +926,22 @@ public:
                 v.push_back ({ std::lround ((n.start - b * 4.0) * 1000.0), n.pitch });
         return v;
     }
+    // The moving voice of one bar (pedal notes follow the chord, so they may differ between sections).
+    static std::vector<Note> melodicNotes (const Phrase& p, int b)
+    {
+        std::vector<Note> v;
+        for (const auto& n : p.notes)
+            if (! n.pedal && n.start >= b * 4.0 - 1.0e-9 && n.start < b * 4.0 + 4.0 - 1.0e-9)
+                v.push_back (n);
+        return v;
+    }
+    static std::vector<std::pair<long, int>> melodic (const Phrase& p, int b)
+    {
+        std::vector<std::pair<long, int>> v;
+        for (const auto& n : melodicNotes (p, b))
+            v.push_back ({ std::lround ((n.start - b * 4.0) * 1000.0), n.pitch });
+        return v;
+    }
     static std::vector<long> rhythm (const Phrase& p, int b)
     {
         std::vector<long> v;
@@ -948,31 +964,101 @@ public:
             expect (formSections (Form::classic, 4).empty());
         }
 
-        beginTest ("A B A C: A comes back note for note, B answers, C closes on the root");
+        beginTest ("Every style: A comes back note for note, B ends on the fifth, C closes on the tonic");
+        for (int st = 0; st < (int) Style::count; ++st)
+            for (int sc : { (int) scales::Scale::phrygian, (int) scales::Scale::harmonicMinor, (int) scales::Scale::minorPentatonic })
+            {
+                GenParams gp;
+                gp.style = (Style) st;
+                gp.scale = (scales::Scale) sc;
+                gp.form = Form::abac;
+                gp.bars = 4;
+                gp.chroma = 0.0f;
+                gp.seed = 99 + st;
+                const auto mel = generateMelody (gp);
+                const juce::String what = juce::String (styleNames[st]) + " / " + scales::scaleNames[sc];
+                expect (melodic (mel, 0) == melodic (mel, 2), what + ": A must repeat note for note (moving voice)");
+                expect (bar (mel, 1) != bar (mel, 3), what + ": B and C must differ");
+                expect (rhythm (mel, 0).front() == rhythm (mel, 1).front(), what + ": the answer starts like the call");
+
+                const auto& last = mel.notes.back();
+                expectEquals (scales::mod (last.pitch - gp.key, 12), 0, what + ": C must end on the key's tonic");
+                expect (mel.lengthBeats - last.end() < 0.05, what + ": the closing note is held");
+                expect (isMonophonic (mel), what);
+
+                // B lands open on the key's fifth.
+                const auto b = melodicNotes (mel, 1);
+                if (! b.empty())
+                {
+                    const int fifth = scales::degreeToPitch (0, gp.scale, scales::mapDegree (gp.scale, 4));
+                    expectEquals (scales::mod (b.back().pitch - gp.key, 12), scales::mod (fifth, 12), what + ": B must end on the fifth");
+                }
+
+                // MUTATE re-draws the answers, never A.
+                auto mutated = gp;
+                mutated.variation = 1;
+                const auto m2 = generateMelody (mutated);
+                expect (bar (m2, 0) == bar (mel, 0), what + ": MUTATE must keep A");
+                expect (bar (m2, 2) == bar (mel, 2), what + ": MUTATE must keep the return of A");
+            }
+
+        beginTest ("Period: B' closes on the tonic; repeated A has identical expression");
         {
             GenParams gp;
-            gp.style = Style::opr; // i - bII - i - bII: bars 1 and 3 share the chord
-            gp.form = Form::abac;
-            gp.bars = 4;
-            gp.chroma = 0.4f;
-            gp.seed = 99;
+            gp.form = Form::period;
+            gp.style = Style::pursuit;
+            gp.seed = 31;
+            gp.chroma = 0.0f;
+            auto mel = generateMelody (gp);
+            const auto closed = melodicNotes (mel, 3);
+            expect (! closed.empty());
+            if (! closed.empty())
+                expectEquals (scales::mod (closed.back().pitch - gp.key, 12), 0, "B' must end on the tonic");
+
+            humanize (mel, 1.0f, 5);
+            shapeExpression (mel, {});
+            const auto a0 = melodicNotes (mel, 0), a2 = melodicNotes (mel, 2);
+            expectEquals ((int) a0.size(), (int) a2.size());
+            bool same = a0.size() == a2.size();
+            for (size_t i = 0; same && i < a0.size(); ++i)
+            {
+                same = std::abs ((a0[i].start + 8.0) - a2[i].start) < 1.0e-9 && a0[i].velocity == a2[i].velocity;
+                // What comes before / after the section may tie into it differently: compare the untied notes.
+                if (a0[i].glideFrom != a2[i].glideFrom || std::abs (a0[i].length - a2[i].length) > 1.0e-9)
+                    continue;
+                same = same && a0[i].bend.size() == a2[i].bend.size();
+                for (size_t k = 0; same && k < a0[i].bend.size(); ++k)
+                    same = std::abs (a0[i].bend[k].v - a2[i].bend[k].v) < 1.0e-6f;
+            }
+            expect (same, "a repeated A must be humanized and shaped identically");
+        }
+
+        beginTest ("Sequence: A+ is A one scale step up, contour intact");
+        for (int st = 0; st < (int) Style::count; ++st)
+        {
+            GenParams gp;
+            gp.form = Form::sequence;
+            gp.style = (Style) st;
+            gp.chroma = 0.0f;
+            gp.seed = 400 + st;
             const auto mel = generateMelody (gp);
-            expect (bar (mel, 0) == bar (mel, 2), "A must repeat exactly (chromatic notes included)");
-            expect (bar (mel, 1) != bar (mel, 3), "B and C must differ");
-            expect (rhythm (mel, 0).front() == rhythm (mel, 1).front(), "the answer starts like the call");
-
-            const auto& prog = styleProgression (gp.style);
-            const int chordRoot = scales::mod (scales::degreeToPitch (gp.key, gp.scale, prog[3]), 12);
-            const auto& last = mel.notes.back();
-            expectEquals (scales::mod (last.pitch, 12), chordRoot, "C must end on the chord root");
-            expect (last.end() > 15.9 - 1.0e-6 || mel.lengthBeats - last.end() < 0.05, "the closing note is held");
-            expect (isMonophonic (mel));
-
-            // MUTATE re-draws the answers, never A.
-            auto mutated = gp;
-            mutated.variation = 1;
-            const auto m2 = generateMelody (mutated);
-            expect (bar (m2, 0) == bar (mel, 0), "MUTATE must keep A");
+            const auto a = melodic (mel, 0), up = melodic (mel, 1);
+            const juce::String what = styleNames[st];
+            expectEquals ((int) a.size(), (int) up.size(), what);
+            if (a.size() != up.size())
+                continue;
+            for (size_t i = 0; i < a.size(); ++i)
+            {
+                int next = a[i].second + 1;
+                while (! scales::inScale (next, gp.key, gp.scale))
+                    ++next;
+                expectEquals (scales::mod (up[i].second, 12), scales::mod (next, 12), what + ": every note one step up");
+            }
+            // The section moves as a whole: the intervals between the notes keep their direction.
+            int kept = 0;
+            for (size_t i = 1; i < a.size(); ++i)
+                kept += ((a[i].second > a[i - 1].second) == (up[i].second > up[i - 1].second)) ? 1 : 0;
+            expectGreaterOrEqual (kept, (int) a.size() - 2, what + ": contour");
         }
 
         beginTest ("A A A B and Sequence keep the rhythm of A");
@@ -1011,34 +1097,22 @@ public:
                 expect (isMonophonic (a), what + " must stay one line");
             }
 
-        beginTest ("Forms shape cinematic progressions");
+        beginTest ("Forms never change the chords");
         {
-            HarmonyParams hp;
-            hp.progression = Progression::epicMinor;
-            hp.form = Form::abac;
-            SectionMarks marks;
-            const auto abac = generateProgression (hp, &marks);
-            juce::String chords;
-            for (const auto& r : abac) chords << chordSymbol (r) << " ";
-            expectEquals (chords.trim(), juce::String ("Am F Am E7"));
-            expectEquals ((int) marks.size(), 4);
-
-            hp.form = Form::sequence;
-            hp.bars = 8;
-            chords = {};
-            for (const auto& r : generateProgression (hp)) chords << chordSymbol (r) << " ";
-            expectEquals (chords.trim(), juce::String ("Am F Bm G Cm G# Dm E7"));
-
-            for (int f = 0; f < (int) Form::count; ++f)
-                for (int prog = 0; prog < (int) Progression::count; ++prog)
+            KitParams kp;
+            kp.gen.style = Style::pursuit;
+            const auto classic = generateKit (kp);
+            kp.gen.form = Form::abac;
+            const auto abac = generateKit (kp);
+            for (size_t i = 0; i < classic.size(); ++i)
+                if (classic[i].layer == Layer::pad || classic[i].layer == Layer::stab)
                 {
-                    hp.form = (Form) f;
-                    hp.progression = (Progression) prog;
-                    hp.bars = 8;
-                    auto out = cinematicRegions (generateProgression (hp), 32.0, {}, hp.key);
-                    shapeExpression (out, {});
-                    juce::String why;
-                    expect (channelsAreExclusive (renderMpe (out), why), juce::String (formNames[f]) + " / " + progressionNames[prog] + ": " + why);
+                    const auto& x = classic[i].phrase.notes;
+                    const auto& y = abac[i].phrase.notes;
+                    bool same = x.size() == y.size();
+                    for (size_t k = 0; same && k < x.size(); ++k)
+                        same = x[k].pitch == y[k].pitch && std::abs (x[k].start - y[k].start) < 1.0e-9;
+                    expect (same, juce::String (layerNames[(int) classic[i].layer]) + " must not follow the form");
                 }
         }
 
@@ -1051,6 +1125,16 @@ public:
             for (const auto& part : parts)
                 if (part.layer == Layer::arp || part.layer == Layer::bass || part.layer == Layer::lead)
                     expect (bar (part.phrase, 0) == bar (part.phrase, 2), juce::String (layerNames[(int) part.layer]) + ": A bars must repeat");
+
+            // Whatever the chord of the last bar, bass and arp close on the key's tonic.
+            for (int st = 0; st < (int) Style::count; ++st)
+            {
+                kp.gen.style = (Style) st;
+                for (const auto& part : generateKit (kp))
+                    if (part.layer == Layer::arp || part.layer == Layer::bass)
+                        expectEquals (scales::mod (part.phrase.notes.back().pitch - kp.gen.key, 12), 0,
+                                      juce::String (styleNames[st]) + " / " + layerNames[(int) part.layer] + ": must close on the tonic");
+            }
         }
     }
 };
@@ -1250,21 +1334,6 @@ static int renderExamples (const juce::File& inDir, const juce::File& outDir)
         gp.bars = 8;
         gp.form = form;
         save (generateMelody (gp), juce::String ("Form - Lead Pursuit - ") + formNames[(int) form]);
-
-        HarmonyParams hp;
-        hp.bars = 8;
-        hp.form = form;
-        CineParams cp;
-        cp.reharm = Reharm::suspensions;
-        cp.tension = 0.3f;
-        cp.sub = true;
-        std::vector<Region> used;
-        auto phrase = cinematicRegions (generateProgression (hp), 32.0, cp, hp.key, &used);
-        juce::String chords;
-        for (const auto& r : used)
-            chords << " " << chordSymbol (r);
-        std::cout << "  " << formNames[(int) form] << ":" << chords << std::endl;
-        save (phrase, juce::String ("Form - Cinematic Epic Minor - ") + formNames[(int) form]);
     }
 
     struct Showcase { const char* name; Progression prog; Motion motion; Reharm reharm; VoicingMode voicing; GlideShape shape;

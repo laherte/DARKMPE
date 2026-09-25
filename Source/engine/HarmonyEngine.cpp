@@ -118,40 +118,9 @@ std::vector<ChordDef> autoProgression (const HarmonyParams& p, int count)
     return out;
 }
 
-// Chord j of a section of `groupSize` chords, built from the base progression.
-ChordDef sectionChord (const std::vector<ChordDef>& base, const Section& s, int j, int groupSize)
-{
-    auto at = [&base] (int k) { return base[(size_t) (k % (int) base.size())]; };
-    const int last = groupSize - 1;
-    switch (s.kind)
-    {
-        case SectionKind::statement:
-        {
-            // A, or A moved up (sequence: a whole step per step; A' of a sentence: a minor third).
-            static const int semis[] = { 0, 2, 3, 5 };
-            auto c = at (j);
-            const int t = semis[std::clamp (s.shift, 0, 3)];
-            c.root += t;
-            if (c.bass >= 0)
-                c.bass += t;
-            return c;
-        }
-        case SectionKind::answer:       return at (groupSize + j);
-        case SectionKind::closedAnswer: return j == last ? (groupSize > 1 ? at (0) : at (3)) : at (groupSize + j);
-        case SectionKind::close:
-            if (j == last)
-                return { 7, q::dom7 };
-            if (j == last - 1)
-                return { 5, q::min };
-            return at (2 * groupSize + j);
-        case SectionKind::fragment:     return at (j % 2);
-    }
-    return at (j);
-}
-
 } // namespace
 
-std::vector<Region> generateProgression (const HarmonyParams& p, SectionMarks* sections)
+std::vector<Region> generateProgression (const HarmonyParams& p)
 {
     const double total = std::clamp (p.bars, 1, 16) * 4.0;
     const double len = chordBeats (p.chordLength);
@@ -160,23 +129,10 @@ std::vector<Region> generateProgression (const HarmonyParams& p, SectionMarks* s
     const auto base = p.progression == Progression::autoSeed ? autoProgression (p, std::max (count, 4)) : fixedProgression (p.progression);
     const int tonic = p.key + 48; // around C3..B3: the voicing places everything anyway
 
-    // The chord of every slot: the progression repeated, or regrouped by the form.
+    // The chord of every slot: the progression, repeated.
     std::vector<ChordDef> defs;
-    if (p.form == Form::classic || count < 2)
-        for (int i = 0; i < count; ++i)
-            defs.push_back (base[(size_t) i % base.size()]);
-    else
-    {
-        const int group = std::max (1, count / 4);
-        const auto secs = formSections (p.form, (count + group - 1) / group);
-        for (size_t si = 0; si < secs.size(); ++si)
-        {
-            if (sections != nullptr)
-                sections->push_back ({ (double) si * group * len, secs[si].label });
-            for (int j = 0; j < group && (int) defs.size() < count; ++j)
-                defs.push_back (sectionChord (base, secs[si], j, group));
-        }
-    }
+    for (int i = 0; i < count; ++i)
+        defs.push_back (base[(size_t) i % base.size()]);
 
     std::vector<Region> out;
     for (int i = 0; i < count; ++i)

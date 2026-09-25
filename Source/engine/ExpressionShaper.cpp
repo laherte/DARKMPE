@@ -10,10 +10,14 @@ namespace dmpe
 void shapeExpression (Phrase& phrase, const ExprParams& p)
 {
     constexpr double twoPi = 6.283185307179586;
-    Rng rng ((uint64_t) p.seed * 2654435761ull + 3ull);
+    Rng shared ((uint64_t) p.seed * 2654435761ull + 3ull);
 
     for (auto& n : phrase.notes)
     {
+        // Notes with their own seed get the same detune / vibrato phase wherever their section comes back.
+        Rng own (mixSeed (n.exprSeed, (uint64_t) p.seed * 2654435761ull + 3ull));
+        Rng& rng = n.exprSeed != 0 ? own : shared;
+
         if (n.lockedExpr)
         {
             // Engine-authored motion: keep it, add the analog detune spread only.

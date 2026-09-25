@@ -108,6 +108,7 @@ private:
     void showSeedMenu();
     void showPresetMenu();
     void updateSeedControls();
+    void updateFormEnabled();
     void setScale (float scale);
 
     DarkMPEProcessor& proc;

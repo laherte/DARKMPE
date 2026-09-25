@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 namespace dmpe
@@ -44,6 +45,13 @@ struct Note
     bool chromatic = false;
     bool lockedExpr = false;    // curves were authored by an engine (cinematic): the shaper only adds detune
     bool hasSourceExpr = false; // bend/slide/pressure came from an imported (MPE) performance
+    bool pedal = false;         // the riff's root pedal (follows the chord), not the moving voice
+
+    // Phrase form: the kind of section the note belongs to (SectionKind), -1 = no form.
+    int sectionKind = -1;
+    // Seed for everything random about this note after generation (humanize, detune, vibrato phase, gestures).
+    // Generators give notes of repeated sections the same seed, so a section comes back identical; 0 = none.
+    uint64_t exprSeed = 0;
 
     // MPE expression (filled by ExpressionShaper).
     Curve bend;     // semitones relative to pitch
