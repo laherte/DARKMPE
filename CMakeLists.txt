@@ -41,6 +41,16 @@ juce_add_plugin(DarkMPE
     AU_MAIN_TYPE kAudioUnitType_MusicDevice
     COPY_PLUGIN_AFTER_BUILD ${DARKMPE_INSTALL})
 
+# JUCE 8.0.10 ad-hoc signs the VST3 bundle before it writes Contents/Resources/moduleinfo.json, so the seal
+# misses that file and hosts reject the bundle ("a sealed resource is missing or invalid"). Sign it again last.
+if(APPLE)
+    add_custom_command(TARGET DarkMPE_VST3 POST_BUILD
+        COMMAND "${CMAKE_COMMAND}"
+            "-Dsrc=$<TARGET_BUNDLE_DIR:DarkMPE_VST3>"
+            "-P" "${JUCE_CMAKE_UTILS_DIR}/checkBundleSigning.cmake"
+        VERBATIM)
+endif()
+
 target_sources(DarkMPE PRIVATE
     ${ENGINE_SOURCES}
     Source/PluginProcessor.cpp
