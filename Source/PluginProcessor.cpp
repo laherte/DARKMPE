@@ -72,6 +72,10 @@ constexpr const char* slideAmt = "slideAmt";
 constexpr const char* slideSpread = "slideSpread";
 constexpr const char* pressAmt = "pressAmt";
 constexpr const char* breath = "breath";
+constexpr const char* gesture = "gesture";
+constexpr const char* gAmount = "gAmount";
+constexpr const char* gDepth = "gDepth";
+constexpr const char* gRiff = "gRiff";
 constexpr const char* pbRange = "pbRange";
 constexpr const char* preview = "preview";
 constexpr const char* virtualOut = "virtualOut";
@@ -166,6 +170,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout DarkMPEProcessor::createLayo
     flt (ids::slideSpread, "Timbre Spread", 0.0f, 1.0f, 0.4f);
     flt (ids::pressAmt, "Pressure", 0.0f, 1.0f, 0.7f);
     flt (ids::breath, "Breath", 0.0f, 1.0f, 0.2f);
+    choice (ids::gesture, "Gesture", names (gestureProfileNames, (int) GestureProfile::count), (int) GestureProfile::autoStyle);
+    flt (ids::gAmount, "Gesture Amount", 0.0f, 1.0f, 0.5f);
+    flt (ids::gDepth, "Gesture Depth", 0.0f, 1.0f, 0.4f);
+    flt (ids::gRiff, "Bend Riff", 0.0f, 1.0f, 0.35f);
     integer (ids::pbRange, "Bend Range", 1, 96, 48);
     boolean (ids::preview, "Preview", false);
     boolean (ids::virtualOut, "Virtual MIDI Out", true);
@@ -351,6 +359,21 @@ ExprParams DarkMPEProcessor::readExprParams() const
     return e;
 }
 
+GestureParams DarkMPEProcessor::readGestureParams() const
+{
+    GestureParams g;
+    g.profile = (GestureProfile) pi (ids::gesture);
+    g.amount = pf (ids::gAmount);
+    g.depth = pf (ids::gDepth);
+    g.riff = pf (ids::gRiff);
+    g.glideTime = pf (ids::glideTime);
+    g.key = pi (ids::key);
+    g.scale = (scales::Scale) pi (ids::scale);
+    g.style = (Style) pi (ids::style);
+    g.seed = (int) apvts.state.getProperty ("seed", 1);
+    return g;
+}
+
 CineParams DarkMPEProcessor::readCineParams() const
 {
     CineParams c;
@@ -413,13 +436,16 @@ HarmonyParams DarkMPEProcessor::readHarmonyParams() const
 const juce::StringArray& DarkMPEProcessor::expressionParamIds()
 {
     static const juce::StringArray list { ids::glideTime, ids::glideCurve, ids::detune, ids::vibDepth, ids::vibRate, ids::vibDelay,
-                                          ids::slideAmt, ids::slideSpread, ids::pressAmt, ids::breath };
+                                          ids::slideAmt, ids::slideSpread, ids::pressAmt, ids::breath,
+                                          ids::gesture, ids::gAmount, ids::gDepth, ids::gRiff, ids::style, ids::key, ids::scale };
     return list;
 }
 
 Phrase DarkMPEProcessor::expressionDemo() const
 {
-    // A pickup, a glide into a held note (glide, vibrato, detune drift), a short note and a closing note.
+    // A pickup, a glide into a held note (glide, vibrato, detune drift), a run of 16ths (a Bend Riff candidate),
+    // and a closing note, with the gestures of the current profile (shown more often than they occur, so the
+    // profile's character is visible in four beats).
     Phrase p;
     p.lengthBeats = 4.0;
     auto add = [&p] (double start, double length, int pitch, int from)
@@ -433,18 +459,32 @@ Phrase DarkMPEProcessor::expressionDemo() const
         n.exprSeed = mixSeed (4242, (uint64_t) std::lround (start * 64.0) + 1);
         p.notes.push_back (n);
     };
-    add (0.0, 0.5, 60, -1);
-    add (0.5, 2.0, 63, 60);
-    add (2.5, 0.5, 62, -1);
-    add (3.0, 0.98, 60, -1);
+    const int key = pi (ids::key);
+    const auto scale = (scales::Scale) pi (ids::scale);
+    const int tonic = key + 60;
+    auto deg = [&] (int d) { return scales::degreeToPitch (tonic, scale, scales::mapDegree (scale, d)); };
+    add (0.0, 0.45, deg (-1), -1);
+    add (0.5, 1.45, deg (2), deg (-1));
+    add (2.0, 0.2, deg (1), -1);
+    add (2.25, 0.2, deg (2), -1);
+    add (2.5, 0.2, deg (1), -1);
+    add (2.75, 0.2, deg (0), -1);
+    add (3.0, 0.98, deg (0), -1);
+
+    auto g = readGestureParams();
+    g.amount = std::max (g.amount, 0.8f);
+    g.riff = std::max (g.riff, 0.6f);
+    g.seed = 4242;
+    applyGestures (p, g, GestureRole::lead);
     shapeExpression (p, readExprParams());
     return p;
 }
 
 juce::String DarkMPEProcessor::describeExpression() const
 {
-    return "vib " + juce::String (pf (ids::vibDepth), 2) + " st, " + juce::String (pf (ids::vibRate), 1) + "/beat after "
-         + juce::String (pf (ids::vibDelay), 2) + "  -  detune " + juce::String (juce::roundToInt (pf (ids::detune))) + " c";
+    const auto profile = resolveProfile ((GestureProfile) pi (ids::gesture), (Style) pi (ids::style));
+    return juce::String (gestureProfileNames[(int) profile]).toUpperCase() + "  -  vib " + juce::String (pf (ids::vibDepth), 2) + " st "
+         + juce::String (pf (ids::vibRate), 1) + "/beat  -  detune " + juce::String (juce::roundToInt (pf (ids::detune))) + " c";
 }
 
 DarkMPEProcessor::Mode DarkMPEProcessor::getMode() const
@@ -496,9 +536,20 @@ void DarkMPEProcessor::buildKit (Rendered& r)
     const int focus = pi (ids::kFocus);
     r.lengthBeats = std::clamp (kp.gen.bars, 1, 16) * 4.0;
 
+    const auto gestures = readGestureParams();
     for (auto& part : generateKit (kp))
     {
         const int l = (int) part.layer;
+        switch (part.layer)
+        {
+            case Layer::lead:  applyGestures (part.phrase, gestures, GestureRole::lead); break;
+            case Layer::bass:  applyGestures (part.phrase, gestures, GestureRole::bass); break;
+            case Layer::arp:   applyGestures (part.phrase, gestures, GestureRole::arp); break;
+            case Layer::stab:  applyGestures (part.phrase, gestures, GestureRole::chord); break;
+            case Layer::siren:
+            case Layer::pad:
+            case Layer::count: break;
+        }
         if (part.layer == Layer::lead || part.layer == Layer::bass || part.layer == Layer::arp)
             dmpe::humanize (part.phrase, pf (ids::humanize), getSeed() + l);
         const bool mono = ids::layerMono[l] != nullptr && pb (ids::layerMono[l]);
@@ -547,9 +598,15 @@ void DarkMPEProcessor::rebuild()
             harmonyText << (i > 0 ? "  " : "") << chordSymbol (used[i]);
     }
     else if (getMode() == Mode::transform && ! source.empty())
+    {
         main = applyVoicing (source, readVoicingParams());
+        applyGestures (main, readGestureParams(), GestureRole::chord); // the played expression is kept
+    }
     else
+    {
         main = generateMelody (readGenParams());
+        applyGestures (main, readGestureParams(), GestureRole::lead);
+    }
 
     // Melodic forms: one section per bar (the lead, and the kit layers that follow it).
     const bool melodic = getMode() == Mode::kit || getMode() == Mode::generate || (getMode() == Mode::transform && source.empty());

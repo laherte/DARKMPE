@@ -451,8 +451,9 @@ Phrase generateMelody (const GenParams& p)
         }
         else
         {
-            // Only inside a section, so the approach is the same wherever the section comes back.
-            if (barOf (notes[i]) != barOf (notes[i + 1]))
+            // Only inside a section and into the moving voice (pedal notes follow the chord), so the approach is
+            // the same wherever the section comes back.
+            if (barOf (notes[i]) != barOf (notes[i + 1]) || notes[i + 1].pedal)
                 continue;
             auto r = noteRng (i, 1);
             if (! r.chance (p.chroma))

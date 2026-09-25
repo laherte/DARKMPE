@@ -6,6 +6,7 @@
 #include "PortHub.h"
 #include "engine/CinematicEngine.h"
 #include "engine/ExpressionShaper.h"
+#include "engine/GestureEngine.h"
 #include "engine/KitGenerator.h"
 #include "engine/MidiFileIO.h"
 #include "engine/MelodyGenerator.h"
@@ -173,6 +174,7 @@ private:
     dmpe::GenParams readGenParams() const;
     dmpe::VoicingParams readVoicingParams() const;
     dmpe::ExprParams readExprParams() const;
+    dmpe::GestureParams readGestureParams() const;
     dmpe::CineParams readCineParams() const;
     dmpe::HarmonyParams readHarmonyParams() const;
     dmpe::KitParams readKitParams() const;

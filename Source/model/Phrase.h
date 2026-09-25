@@ -59,6 +59,8 @@ struct Note
     Curve gesturePress;         // pressure gain (empty = 1)
     bool glideAuthored = false; // the gesture curve already contains the glide-in from glideFrom
     float vibrato = 1.0f;       // vibrato depth scale (0 while a riff / trill owns the pitch, > 1 on held notes)
+    int gestureKind = 0;        // the gesture applied (dmpe::Gesture), 0 = none
+    int articulation = 0;       // the timbre / pressure articulation (dmpe::Articulation), 0 = none
 
     // MPE expression (filled by ExpressionShaper).
     Curve bend;     // semitones relative to pitch

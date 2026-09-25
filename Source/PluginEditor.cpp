@@ -2,6 +2,7 @@
 #include "presets/Presets.h"
 
 #include <map>
+#include <tuple>
 
 using namespace theme;
 
@@ -245,6 +246,17 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
                               { "cLow", "Low Note" }, { "cHigh", "High Note" } })
         knob (cineControls, id, label);
 
+    choice (exprControls, "gesture", "Gesture");
+    static_cast<Choice*> (exprControls.back().get())->box.setTooltip (
+        "MPE gestures: Classic (glides only), Liquid, Vocal, Acid, Aggressive, Glitch, or Auto (from the style). "
+        "Dips, lifts, scoops, falls, partial glides, overshoots, stepped glides, trills, wobbles, dives, Bend Riffs");
+    for (auto [id, label, tip] : { std::tuple { "gAmount", "Amount", "How many notes get a gesture (and a timbre / pressure articulation)" },
+                                   { "gDepth", "Depth", "Largest gesture: 1 semitone (0) to an octave (1)" },
+                                   { "gRiff", "Bend Riff", "How often a run of short notes becomes one note bent through their pitches" } })
+    {
+        knob (exprControls, id, label);
+        static_cast<Knob*> (exprControls.back().get())->slider.setTooltip (tip);
+    }
     for (auto [id, label] : { std::pair { "glideTime", "Glide Time" }, { "glideCurve", "Glide Curve" }, { "detune", "Detune" },
                               { "vibDepth", "Vibrato" }, { "vibRate", "Vib Rate" }, { "vibDelay", "Vib Delay" },
                               { "slideAmt", "Timbre" }, { "slideSpread", "Timbre Sprd" }, { "pressAmt", "Pressure" },
@@ -626,7 +638,7 @@ void DarkMPEEditor::layoutContent()
     const int w = r.getWidth();
     modeArea = r.removeFromLeft ((int) (w * 0.535f));
     r.removeFromLeft (8);
-    exprArea = r.removeFromLeft ((int) (w * 0.285f));
+    exprArea = r.removeFromLeft ((int) (w * 0.318f));
     r.removeFromLeft (8);
     outArea = r;
 

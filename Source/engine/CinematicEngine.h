@@ -1,6 +1,7 @@
 #pragma once
 
 #include "model/Phrase.h"
+#include "engine/CurveShapes.h"
 #include "engine/HarmonyEngine.h"
 #include "engine/Scales.h"
 #include "engine/VoicingEngine.h"
@@ -36,8 +37,6 @@ enum class Reharm
 inline const char* const reharmNames[] = { "Off", "Sus Resolve", "Chromatic Approach", "Mediant Shift",
                                            "Suspensions", "Tonic Pedal", "Planing", "Tritone Approach" };
 
-enum class GlideShape { linear, ease, swoopIn, swoopOut, stepped, count };
-inline const char* const glideShapeNames[] = { "Linear", "Ease", "Swoop In", "Swoop Out", "Stepped" };
 
 struct CineParams
 {

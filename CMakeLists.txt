@@ -21,6 +21,7 @@ set(ENGINE_SOURCES
     Source/engine/Humanize.cpp
     Source/engine/KitGenerator.cpp
     Source/engine/ExpressionShaper.cpp
+    Source/engine/GestureEngine.cpp
     Source/engine/MpeRenderer.cpp
     Source/engine/MidiFileIO.cpp)
 
