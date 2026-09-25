@@ -13,6 +13,9 @@ class DarkMPEEditor : public juce::AudioProcessorEditor,
                       private juce::Timer
 {
 public:
+    // Everything is laid out at this size and scaled as a whole (60% .. 160%).
+    static constexpr int baseWidth = 1200, baseHeight = 780;
+
     explicit DarkMPEEditor (DarkMPEProcessor&);
     ~DarkMPEEditor() override;
 
@@ -20,8 +23,8 @@ public:
     void resized() override;
 
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
-    void fileDragEnter (const juce::StringArray&, int, int) override { dropHover = true; repaint(); }
-    void fileDragExit (const juce::StringArray&) override { dropHover = false; repaint(); }
+    void fileDragEnter (const juce::StringArray&, int, int) override { dropHover = true; content.repaint(); }
+    void fileDragExit (const juce::StringArray&) override { dropHover = false; content.repaint(); }
     void filesDropped (const juce::StringArray& files, int, int) override;
 
     // ---- small widgets
@@ -46,7 +49,7 @@ public:
     struct Toggle : juce::Component
     {
         Toggle (juce::AudioProcessorValueTreeState& s, const juce::String& id, const juce::String& label);
-        void resized() override { button.setBounds (getLocalBounds().reduced (2, 6)); }
+        void resized() override { button.setBounds (getLocalBounds().reduced (2, 5)); }
         juce::TextButton button;
         juce::AudioProcessorValueTreeState::ButtonAttachment attachment;
     };
@@ -61,16 +64,62 @@ public:
         bool dragging = false;
     };
 
+    // One KIT layer: focus (name), on, pattern, density, octave, mono.
+    struct LayerRow : juce::Component
+    {
+        LayerRow (DarkMPEProcessor& p, int layer, const char* onId, const char* patternId, const char* densityId,
+                  const char* octaveId, const char* monoId, const juce::String& note);
+        void resized() override;
+        void paint (juce::Graphics&) override;
+
+        DarkMPEProcessor& proc;
+        const int layer;
+        juce::TextButton name, on { "ON" }, mono { "MONO" };
+        juce::ComboBox pattern;
+        juce::Slider density { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+        juce::Slider octave { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+        juce::Label note;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> onAttachment, monoAttachment;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> patternAttachment;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> densityAttachment, octaveAttachment;
+    };
+
+    // The scaled surface holding every control.
+    struct Content : juce::Component
+    {
+        explicit Content (DarkMPEEditor& e) : editor (e) { setOpaque (true); }
+        void paint (juce::Graphics& g) override { editor.paintContent (g); }
+        void paintOverChildren (juce::Graphics& g) override { editor.paintOverlay (g); }
+        void resized() override { editor.layoutContent(); }
+        DarkMPEEditor& editor;
+    };
+
+    using ControlList = std::vector<std::unique_ptr<juce::Component>>;
+
 private:
     void timerCallback() override;
     void updateModeVisibility();
+    void showHarmony();
     void setStatus (const juce::String& s) { status.setText (s, juce::dontSendNotification); }
+    void paintContent (juce::Graphics&);
+    void paintOverlay (juce::Graphics&);
+    void layoutContent();
+    void showScaleMenu();
+    void showSeedMenu();
+    void showPresetMenu();
+    void updateSeedControls();
+    void setScale (float scale);
 
     DarkMPEProcessor& proc;
     theme::LookAndFeel lnf;
+    Content content { *this };
 
-    juce::TextButton genTab { "GENERATE" }, xformTab { "TRANSFORM" }, cineTab { "CINEMATIC" };
+    juce::TextButton genTab { "GENERATE" }, xformTab { "TRANSFORM" }, cineTab { "CINEMATIC" }, kitTab { "KIT" };
     juce::TextButton newBtn { "NEW" }, mutateBtn { "MUTATE" }, loadBtn { "LOAD MIDI" }, captureBtn { "CAPTURE" }, exportBtn { "EXPORT" };
+    juce::TextButton scaleBtn { "100%" };
+    juce::TextButton prevBtn, nextBtn, seedBtn, favBtn; // seed history and favourites
+    juce::TextButton presetBtn;
+    Choice formChoice; // phrase form, for every mode
     Toggle previewToggle;
     DragOut dragOut { *this };
     juce::Label status;
@@ -78,11 +127,13 @@ private:
     PianoRoll roll;
     MpeMonitor monitor;
 
-    std::vector<std::unique_ptr<juce::Component>> genControls, voiceControls, cineControls, exprControls;
-    juce::Rectangle<int> genArea, exprArea;
+    ControlList genControls, voiceControls, cineControls, exprControls, outControls, kitControls;
+    std::vector<std::unique_ptr<LayerRow>> layerRows;
+    juce::Rectangle<int> modeArea, exprArea, outArea, kitHeader;
 
     std::unique_ptr<juce::FileChooser> chooser;
     bool dropHover = false;
+    bool initialised = false;
     DarkMPEProcessor::Mode shownMode { DarkMPEProcessor::Mode::generate };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DarkMPEEditor)

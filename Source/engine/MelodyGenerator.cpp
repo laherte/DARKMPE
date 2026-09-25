@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 
 namespace dmpe
 {
@@ -19,6 +20,7 @@ struct StyleDef
     bool octaveOnOffbeats;
     std::vector<int> pool;        // candidate offsets in scale steps from the chord root
     std::vector<int> weights;
+    std::vector<int> fixedRhythm; // steps of a fixed rhythm (instead of a euclidean one)
 };
 
 const StyleDef& styleDef (Style s)
@@ -39,6 +41,12 @@ const StyleDef& styleDef (Style s)
         // acid slide: syncopated, glides everywhere
         { { 0, 0, 5, 1 }, 8, 12, 0.0f, 0.1f, 0.35f, 0.15f, false, false, false,
           { 0, 1, 2, 4, 6, 7, -2 }, { 3, 2, 2, 2, 1, 2, 1 } },
+        // gallop: i i bVI bVII, 8th + two 16ths on every beat, mostly the root
+        { { 0, 0, 5, 6 }, 12, 12, 0.3f, 0.1f, -0.1f, -0.2f, false, false, false,
+          { 0, 4, 7, 2, -2 }, { 6, 2, 2, 1, 1 }, { 0, 2, 3, 4, 6, 7, 8, 10, 11, 12, 14, 15 } },
+        // rave stab: i VI iv v, sparse syncopated hits, octaves on the offbeats
+        { { 0, 5, 3, 4 }, 5, 8, -0.1f, 0.3f, -0.15f, -0.35f, false, false, true,
+          { 0, 4, 7, 2, 1 }, { 4, 3, 2, 1, 1 } },
     };
     return defs[(size_t) s];
 }
@@ -84,9 +92,115 @@ struct MotifEvent
     int octave;     // extra octaves
     bool pedal;
     bool accent;
+    float jitter = 0.0f; // velocity variation fixed per event (forms: repeated sections stay identical)
 };
 
+uint64_t labelHash (const std::string& label)
+{
+    uint64_t h = 1469598103934665603ull;
+    for (char c : label)
+        h = (h ^ (uint64_t) (unsigned char) c) * 1099511628211ull;
+    return h;
+}
+
+// A section of a phrase form built from the basic idea A. Offsets are scale steps from the chord root; pedal
+// events stay on the root in every section (they carry the style). `tail` marks the note held to the next one.
+std::vector<MotifEvent> sectionMotif (const std::vector<MotifEvent>& a, const Section& s, const StyleDef& def, Rng& rng,
+                                      std::vector<bool>& tail)
+{
+    auto m = a;
+    auto lastMovable = [&m]
+    {
+        for (int i = (int) m.size() - 1; i >= 0; --i)
+            if (! m[(size_t) i].pedal)
+                return i;
+        return -1;
+    };
+
+    switch (s.kind)
+    {
+        case SectionKind::statement:
+            for (auto& e : m)
+                if (! e.pedal)
+                    e.offset += s.shift;
+            break;
+
+        case SectionKind::answer:
+        case SectionKind::closedAnswer:
+        {
+            // Same rhythm and opening; the second half mirrors the call's contour around where it had got to,
+            // and lands open (the fifth: a question) or closed (the root).
+            int pivot = 0;
+            for (const auto& e : m)
+                if (e.step < 8 && ! e.pedal)
+                    pivot = e.offset;
+            for (auto& e : m)
+                if (e.step >= 8 && ! e.pedal)
+                {
+                    e.offset = std::clamp (2 * pivot - e.offset, -3, 9);
+                    if (rng.chance (0.3f))
+                        e.offset = pickWeighted (rng, def.pool, def.weights, e.offset);
+                }
+            if (const int i = lastMovable(); i >= 0)
+                m[(size_t) i].offset = s.kind == SectionKind::answer ? 4 : 0;
+            break;
+        }
+
+        case SectionKind::close:
+        {
+            // A's opening, then a stepwise walk down to the root, held until the phrase comes round again.
+            std::vector<size_t> second;
+            for (size_t i = 0; i < m.size(); ++i)
+                if (m[i].step >= 8 && ! m[i].pedal)
+                    second.push_back (i);
+            if (second.empty())
+            {
+                if (const int i = lastMovable(); i >= 0)
+                    second.push_back ((size_t) i);
+            }
+            const int n = (int) second.size();
+            for (int k = 0; k < n; ++k)
+                m[second[(size_t) k]].offset = n - 1 - k;
+            if (n > 0)
+            {
+                const int endStep = m[second.back()].step;
+                m.erase (std::remove_if (m.begin(), m.end(), [endStep] (const MotifEvent& e) { return e.step > endStep; }), m.end());
+            }
+            tail.assign (m.size(), false);
+            if (! m.empty())
+                tail.back() = true;
+            return m;
+        }
+
+        case SectionKind::fragment:
+        {
+            // Fragmentation: the head of the idea, twice, the repeat a step higher.
+            std::vector<MotifEvent> head;
+            for (const auto& e : a)
+                if (e.step < 8)
+                    head.push_back (e);
+            m = head;
+            for (auto e : head)
+            {
+                e.step += 8;
+                if (! e.pedal)
+                    e.offset += 1;
+                m.push_back (e);
+            }
+            break;
+        }
+    }
+
+    tail.assign (m.size(), false);
+    return m;
+}
+
 } // namespace
+
+const std::vector<int>& styleProgression (Style s)
+{
+    return styleDef (s).progression;
+}
 
 Phrase generateMelody (const GenParams& p)
 {
@@ -100,6 +214,13 @@ Phrase generateMelody (const GenParams& p)
     // ---- rhythm
     const int pulses = std::clamp ((int) std::lround (def.minPulses + (def.maxPulses - def.minPulses) * p.density), 1, 16);
     auto pattern = euclid (pulses, 16, rng.range (0, 3));
+    if (! def.fixedRhythm.empty())
+    {
+        // Fixed rhythm; low density thins out the off-beat 16ths.
+        std::fill (pattern.begin(), pattern.end(), false);
+        for (int step : def.fixedRhythm)
+            pattern[(size_t) step] = step % 4 == 0 || ! rng.chance ((1.0f - p.density) * 0.6f);
+    }
     pattern[0] = true; // the downbeat always speaks
 
     // ---- motif (one bar)
@@ -161,6 +282,47 @@ Phrase generateMelody (const GenParams& p)
     Phrase out;
     out.lengthBeats = bars * 4.0;
 
+    const auto sections = formSections (p.form, bars);
+    std::set<long long> heldStarts; // form: closing notes held to the next note
+    auto startKey = [] (double t) { return (long long) std::llround (t * 1.0e6); };
+
+    if (! sections.empty())
+    {
+        // Phrase form: every bar is a section built from the motif; the same label gives the same notes
+        // (MUTATE re-draws the answers, never A).
+        Rng jitterRng ((uint64_t) p.seed * 6364136223846793005ull + 5ull);
+        for (auto& e : motif)
+            e.jitter = jitterRng.uniform();
+
+        for (int bar = 0; bar < bars; ++bar)
+        {
+            const auto& sec = sections[(size_t) bar];
+            const int root = def.progression[(size_t) (bar % (int) def.progression.size())];
+            Rng secRng ((uint64_t) p.seed * 7919ull + (uint64_t) p.variation * 104729ull + labelHash (sec.label) * 31ull + 17ull);
+            std::vector<bool> tail;
+            const auto events = sectionMotif (motif, sec, def, secRng, tail);
+
+            for (size_t i = 0; i < events.size(); ++i)
+            {
+                const auto& e = events[i];
+                int pitch = scales::degreeToPitch (tonic, p.scale, scales::mapDegree (p.scale, root + e.offset)) + 12 * e.octave;
+                while (pitch > highest) pitch -= 12;
+                while (pitch < lowest)  pitch += 12;
+
+                Note n;
+                n.start = bar * 4.0 + e.step * stepLen;
+                if (e.step % 2 == 1)
+                    n.start += p.swing * (stepLen / 3.0);
+                n.pitch = pitch;
+                n.accent = e.accent;
+                n.velocity = std::clamp ((e.pedal ? 0.66f : 0.74f) + (e.accent ? 0.2f : 0.0f) + 0.08f * e.jitter, 0.05f, 1.0f);
+                out.notes.push_back (n);
+                if (tail[i])
+                    heldStarts.insert (startKey (n.start));
+            }
+        }
+    }
+    else
     for (int bar = 0; bar < bars; ++bar)
     {
         const int root = def.progression[(size_t) (bar % (int) def.progression.size())];
@@ -177,7 +339,7 @@ Phrase generateMelody (const GenParams& p)
             if (responseBar && e.step >= 12 && varRng.chance (0.3f))
                 e.octave += 1; // lift at the end of the phrase
 
-            int pitch = scales::degreeToPitch (tonic, p.scale, root + e.offset) + 12 * e.octave;
+            int pitch = scales::degreeToPitch (tonic, p.scale, scales::mapDegree (p.scale, root + e.offset)) + 12 * e.octave;
             while (pitch > highest) pitch -= 12;
             while (pitch < lowest)  pitch += 12;
 
@@ -205,13 +367,37 @@ Phrase generateMelody (const GenParams& p)
     auto& notes = out.notes;
     const size_t count = notes.size();
 
+    // With a form, per-note decisions depend on (section, step) only, so repeated sections stay identical.
+    auto barOf = [] (const Note& n) { return (int) std::floor (n.start / 4.0 + 1.0e-9); };
+    auto noteRng = [&] (size_t i, uint64_t salt)
+    {
+        const int bar = barOf (notes[i]);
+        const int step = (int) std::lround ((notes[i].start - bar * 4.0) / stepLen - 0.2);
+        return Rng ((uint64_t) p.seed * 2654435761ull + labelHash (sections[(size_t) bar].label) * 97ull + (uint64_t) step * 131ull + salt);
+    };
+
     // ---- chromatic approach notes (lead a semitone into the next note)
     for (size_t i = 0; i + 1 < count; ++i)
     {
-        if (i == 0 || ! rng.chance (p.chroma))
-            continue;
+        int direction = 0;
+        if (sections.empty())
+        {
+            if (i == 0 || ! rng.chance (p.chroma))
+                continue;
+            direction = rng.chance (0.6f) ? -1 : 1;
+        }
+        else
+        {
+            // Only inside a section, so the approach is the same wherever the section comes back.
+            if (barOf (notes[i]) != barOf (notes[i + 1]))
+                continue;
+            auto r = noteRng (i, 1);
+            if (! r.chance (p.chroma))
+                continue;
+            direction = r.chance (0.6f) ? -1 : 1;
+        }
         const int target = notes[i + 1].pitch;
-        const int approach = target + (rng.chance (0.6f) ? -1 : 1);
+        const int approach = target + direction;
         if (approach != notes[i].pitch && approach != target && ! scales::inScale (approach, p.key, p.scale))
         {
             notes[i].pitch = approach;
@@ -229,12 +415,20 @@ Phrase generateMelody (const GenParams& p)
         const double span = std::max (0.05, nextStart - notes[i].start);
         notes[i].length = std::max (0.05, span * gate);
 
-        if (i > 0 && notes[i - 1].pitch != notes[i].pitch && rng.chance (slideProb))
+        const bool slide = sections.empty() ? (i > 0 && notes[i - 1].pitch != notes[i].pitch && rng.chance (slideProb))
+                                            : (i > 0 && notes[i - 1].pitch != notes[i].pitch && noteRng (i, 2).chance (slideProb));
+        if (slide)
         {
             notes[i - 1].length = notes[i].start - notes[i - 1].start; // tie into the slide
             notes[i].glideFrom = notes[i - 1].pitch;
         }
     }
+
+    // Form: closing notes hold until the next note (the cadence breathes).
+    if (! heldStarts.empty())
+        for (size_t i = 0; i < count; ++i)
+            if (heldStarts.count (startKey (notes[i].start)) != 0)
+                notes[i].length = ((i + 1 < count) ? notes[i + 1].start : out.lengthBeats) - notes[i].start;
 
     if (count > 0)
         notes.back().length = std::min (notes.back().length, out.lengthBeats - notes.back().start - 1.0e-3);

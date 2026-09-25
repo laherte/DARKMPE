@@ -1,6 +1,7 @@
 #pragma once
 
 #include "model/Phrase.h"
+#include "engine/PhraseForm.h"
 #include "engine/Scales.h"
 
 namespace dmpe
@@ -13,10 +14,12 @@ enum class Style
     opr,         // staccato phrygian stabs, i - bII
     darkArp,     // chord-tone arpeggio on i - VI - VII - v
     acidSlide,   // syncopated line with lots of slides
+    gallop,      // 8th + two 16ths, root-heavy, driving
+    raveStab,    // sparse syncopated stabs, octave jumps on the offbeats
     count
 };
 
-inline const char* const styleNames[] = { "Pursuit", "Hate or Glory", "Opr", "Dark Arp", "Acid Slide" };
+inline const char* const styleNames[] = { "Pursuit", "Hate or Glory", "Opr", "Dark Arp", "Acid Slide", "Gallop", "Rave Stab" };
 
 struct GenParams
 {
@@ -35,7 +38,11 @@ struct GenParams
     int rangeOctaves = 2;
     int seed = 1;
     int variation = 0;     // bumps the later-bar mutations without touching the core motif
+    Form form = Form::classic; // phrase structure: one section per bar (A stays identical, MUTATE varies the answers)
 };
+
+// Scale-degree roots of a style's chord progression, one per bar (degrees written for 7-note scales).
+const std::vector<int>& styleProgression (Style s);
 
 // Deterministic for a given GenParams.
 Phrase generateMelody (const GenParams& p);

@@ -17,6 +17,17 @@ using Curve = std::vector<CurvePoint>;
 // Linear interpolation over a curve sorted by t. Returns def for an empty curve.
 float evalCurve (const Curve& c, double t, float def);
 
+// Same interpolation for increasing t, in amortised O(1) per call (renderers walk curves in time order).
+struct CurveCursor
+{
+    CurveCursor (const Curve& c, float def) : curve (c), fallback (def) {}
+    float at (double t);
+
+    const Curve& curve;
+    float fallback;
+    size_t index = 0;
+};
+
 struct Note
 {
     double start = 0.0;   // beats

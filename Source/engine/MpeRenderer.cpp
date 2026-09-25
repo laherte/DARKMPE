@@ -1,5 +1,4 @@
 #include "MpeRenderer.h"
-#include "ExpressionShaper.h"
 
 #include <algorithm>
 #include <cmath>
@@ -17,6 +16,62 @@ namespace
 {
 int to7 (float v) { return std::clamp ((int) std::lround (v * 127.0f), 0, 127); }
 int velTo7 (float v) { return std::clamp ((int) std::lround (v * 127.0f), 1, 127); }
+
+// Curves are sampled on this grid; a message is sent only when the value has moved enough.
+constexpr double renderGrid = 1.0 / 512.0;
+
+// Pitch bend: a move of 12 cents is sent at once (fast glides get a message every grid step, ~1 ms), smaller
+// drifts of 3+ cents at most every 1/32 beat, and a pitch that settles is always sent exactly (glides land in tune).
+int centsToBend (double cents, int range) { return std::max (1, (int) std::lround (cents / 100.0 * 8192.0 / std::max (1, range))); }
+constexpr double bendInterval = 1.0 / 32.0;
+
+// 7-bit lanes (CC74, pressure): a jump of 8 steps is sent at once, smaller drifts at most every 1/16 beat.
+constexpr int laneJump = 8;
+constexpr double laneInterval = 1.0 / 16.0;
+
+// Emits the bend / CC74 / pressure changes of one note after its start `s`.
+template <typename Add>
+void emitExpression (const Note& n, double s, double len, int range, int ch, Add&& add)
+{
+    CurveCursor bend (n.bend, 0.0f), slide (n.slide, 0.5f), press (n.pressure, 0.0f);
+    int lastBend = bendToMidi (bend.at (0.0), range), lastSlide = to7 (slide.at (0.0)), lastPress = to7 (press.at (0.0));
+    int prevBend = lastBend;
+    double bendT = 0.0, slideT = 0.0, pressT = 0.0;
+    const int bigStep = centsToBend (12.0, range), smallStep = centsToBend (3.0, range);
+    constexpr double eps = 1.0e-9;
+
+    for (int k = 1;; ++k)
+    {
+        const double t = k * renderGrid;
+        if (t >= len - eps)
+            break;
+
+        const int b = bendToMidi (bend.at (t), range);
+        const int moved = std::abs (b - lastBend);
+        if (moved >= bigStep || (moved >= smallStep && t - bendT >= bendInterval - eps) || (moved > 0 && b == prevBend))
+        {
+            add (juce::MidiMessage::pitchWheel (ch, b), s + t);
+            lastBend = b;
+            bendT = t;
+        }
+        prevBend = b;
+
+        const int sl = to7 (slide.at (t));
+        if (std::abs (sl - lastSlide) >= laneJump || (sl != lastSlide && t - slideT >= laneInterval - eps))
+        {
+            add (juce::MidiMessage::controllerEvent (ch, 74, sl), s + t);
+            lastSlide = sl;
+            slideT = t;
+        }
+        const int pr = to7 (press.at (t));
+        if (std::abs (pr - lastPress) >= laneJump || (pr != lastPress && t - pressT >= laneInterval - eps))
+        {
+            add (juce::MidiMessage::channelPressureChange (ch, pr), s + t);
+            lastPress = pr;
+            pressT = t;
+        }
+    }
+}
 } // namespace
 
 juce::MidiMessageSequence renderMpe (const Phrase& input, const RenderOptions& opts)
@@ -65,7 +120,10 @@ juce::MidiMessageSequence renderMpe (const Phrase& input, const RenderOptions& o
         owner[(size_t) best] = (int) i;
     }
 
-    // ---- events
+    // ---- events (collected, then sorted once: inserting into a MidiMessageSequence note by note is quadratic)
+    std::vector<std::pair<double, juce::MidiMessage>> events;
+    auto add = [&] (const juce::MidiMessage& m, double t) { events.emplace_back (t, m); };
+
     for (size_t i = 0; i < notes.size(); ++i)
     {
         const auto& n = notes[i];
@@ -76,31 +134,100 @@ juce::MidiMessageSequence renderMpe (const Phrase& input, const RenderOptions& o
         if (len <= 0.0)
             continue;
 
-        int lastBend = bendToMidi (evalCurve (n.bend, 0.0, 0.0f), opts.pitchBendRange);
-        int lastSlide = to7 (evalCurve (n.slide, 0.0, 0.5f));
-        int lastPress = to7 (evalCurve (n.pressure, 0.0, 0.0f));
-
-        seq.addEvent (juce::MidiMessage::pitchWheel (ch, lastBend), s);
-        seq.addEvent (juce::MidiMessage::controllerEvent (ch, 74, lastSlide), s);
-        seq.addEvent (juce::MidiMessage::channelPressureChange (ch, lastPress), s);
-        seq.addEvent (juce::MidiMessage::noteOn (ch, n.pitch, (juce::uint8) velTo7 (n.velocity)), s);
-
-        for (double t = curveResolution; t < len - eps; t += curveResolution)
-        {
-            const int b = bendToMidi (evalCurve (n.bend, t, 0.0f), opts.pitchBendRange);
-            const int sl = to7 (evalCurve (n.slide, t, 0.5f));
-            const int pr = to7 (evalCurve (n.pressure, t, 0.0f));
-
-            if (b != lastBend)   { seq.addEvent (juce::MidiMessage::pitchWheel (ch, b), s + t); lastBend = b; }
-            if (sl != lastSlide) { seq.addEvent (juce::MidiMessage::controllerEvent (ch, 74, sl), s + t); lastSlide = sl; }
-            if (pr != lastPress) { seq.addEvent (juce::MidiMessage::channelPressureChange (ch, pr), s + t); lastPress = pr; }
-        }
-
-        seq.addEvent (juce::MidiMessage::noteOff (ch, n.pitch, (juce::uint8) velTo7 (n.releaseVelocity)), s + len);
+        add (juce::MidiMessage::pitchWheel (ch, bendToMidi (evalCurve (n.bend, 0.0, 0.0f), opts.pitchBendRange)), s);
+        add (juce::MidiMessage::controllerEvent (ch, 74, to7 (evalCurve (n.slide, 0.0, 0.5f))), s);
+        add (juce::MidiMessage::channelPressureChange (ch, to7 (evalCurve (n.pressure, 0.0, 0.0f))), s);
+        add (juce::MidiMessage::noteOn (ch, n.pitch, (juce::uint8) velTo7 (n.velocity)), s);
+        emitExpression (n, s, len, opts.pitchBendRange, ch, add);
+        add (juce::MidiMessage::noteOff (ch, n.pitch, (juce::uint8) velTo7 (n.releaseVelocity)), s + len);
     }
 
+    std::stable_sort (events.begin(), events.end(), [] (const auto& a, const auto& b) { return a.first < b.first; });
+    for (const auto& [t, m] : events)
+        seq.addEvent (m, t);
     seq.updateMatchedPairs();
     return seq;
+}
+
+juce::MidiMessageSequence renderMono (const Phrase& input, int range, bool includeSetup)
+{
+    juce::MidiMessageSequence seq;
+    if (includeSetup)
+        for (const auto& e : monoSetupEvents (range))
+            seq.addEvent (juce::MidiMessage (e.data, e.size, 0.0));
+
+    Phrase phrase = input;
+    phrase.sortByStart();
+    const auto& notes = phrase.notes;
+    constexpr int ch = 1;
+    constexpr double eps = 1.0e-6;
+
+    std::vector<std::pair<double, juce::MidiMessage>> events;
+    auto add = [&] (const juce::MidiMessage& m, double t) { events.emplace_back (t, m); };
+
+    for (size_t i = 0; i < notes.size(); ++i)
+    {
+        Note n = notes[i];
+        const bool hasNext = i + 1 < notes.size();
+        if (hasNext && notes[i + 1].start < n.end() - eps)
+            n.length = notes[i + 1].start - n.start; // one line: a note ends where the next begins
+        if (n.length <= eps)
+            continue; // simultaneous notes: the last (highest) one plays
+        const bool legato = hasNext && std::abs (notes[i + 1].start - n.end()) < eps;
+
+        for (auto& pt : n.bend)
+            pt.v = std::clamp (pt.v, (float) -range, (float) range);
+
+        const double s = n.start;
+        add (juce::MidiMessage::pitchWheel (ch, bendToMidi (evalCurve (n.bend, 0.0, 0.0f), range)), s);
+        add (juce::MidiMessage::controllerEvent (ch, 74, to7 (evalCurve (n.slide, 0.0, 0.5f))), s);
+        add (juce::MidiMessage::channelPressureChange (ch, to7 (evalCurve (n.pressure, 0.0, 0.0f))), s);
+        add (juce::MidiMessage::noteOn (ch, n.pitch, (juce::uint8) velTo7 (n.velocity)), s);
+        emitExpression (n, s, n.length, range, ch, add);
+        // Legato: the next note-on comes first, so mono synths glide / don't retrigger.
+        add (juce::MidiMessage::noteOff (ch, n.pitch, (juce::uint8) velTo7 (n.releaseVelocity)), n.end() + (legato ? eps : 0.0));
+    }
+
+    std::stable_sort (events.begin(), events.end(), [] (const auto& a, const auto& b) { return a.first < b.first; });
+    for (const auto& [t, m] : events)
+        seq.addEvent (m, t);
+    seq.updateMatchedPairs();
+    return seq;
+}
+
+std::vector<PlayEvent> monoSetupEvents (int range)
+{
+    juce::MidiMessageSequence seq;
+    for (const auto& [cc, v] : { std::pair { 101, 0 }, { 100, 0 }, { 6, std::clamp (range, 1, 127) }, { 38, 0 }, { 101, 127 }, { 100, 127 } })
+        seq.addEvent (juce::MidiMessage::controllerEvent (1, cc, v), 0.0);
+    return toPlayEvents (seq);
+}
+
+std::vector<PlayEvent> toPlayEvents (const juce::MidiMessageSequence& seq)
+{
+    std::vector<PlayEvent> out;
+    out.reserve ((size_t) seq.getNumEvents());
+    for (auto* ev : seq)
+    {
+        const auto& m = ev->message;
+        const int size = m.getRawDataSize();
+        if (m.isMetaEvent() || m.isSysEx() || size < 1 || size > 3)
+            continue;
+        PlayEvent e;
+        e.beat = m.getTimeStamp();
+        e.size = (juce::uint8) size;
+        std::copy (m.getRawData(), m.getRawData() + size, e.data);
+        out.push_back (e);
+    }
+    return out;
+}
+
+std::vector<PlayEvent> zoneConfigEvents (int pitchBendRange, int memberChannels)
+{
+    juce::MidiMessageSequence seq;
+    for (const auto meta : juce::MPEMessages::setLowerZone (memberChannels, pitchBendRange, 2))
+        seq.addEvent (meta.getMessage(), 0.0);
+    return toPlayEvents (seq);
 }
 
 } // namespace dmpe

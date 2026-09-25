@@ -11,6 +11,31 @@ MpeMonitor::MpeMonitor (DarkMPEProcessor& p) : proc (p)
 
 MpeMonitor::~MpeMonitor() { stopTimer(); }
 
+void MpeMonitor::timerCallback()
+{
+    std::array<int, 64> now {};
+    size_t i = 0;
+    now[i++] = proc.isPortOpen() ? 1 : 0;
+    now[i++] = proc.isHostMono() ? 1 : 0;
+    now[i++] = proc.getTranspose();
+    for (int ch = 1; ch <= 16; ++ch)
+    {
+        const auto& m = proc.monitor (ch);
+        const int note = m.note.load (std::memory_order_relaxed);
+        if (ch == 1 && ! proc.isHostMono())
+            continue;
+        now[i++] = note;
+        now[i++] = note < 0 ? 0 : (int) std::lround (m.bend.load (std::memory_order_relaxed) * 20.0f);
+        now[i++] = note < 0 ? 0 : (int) std::lround (m.slide.load (std::memory_order_relaxed) * 48.0f)
+                                  + 100 * (int) std::lround (m.pressure.load (std::memory_order_relaxed) * 48.0f);
+    }
+    if (now != snapshot)
+    {
+        snapshot = now;
+        repaint();
+    }
+}
+
 void MpeMonitor::paint (juce::Graphics& g)
 {
     using namespace theme;
@@ -21,17 +46,26 @@ void MpeMonitor::paint (juce::Graphics& g)
 
     g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
     g.setColour (accent());
-    g.drawText ("MPE OUT", label.removeFromTop (label.getHeight() * 0.5f).reduced (4, 0), juce::Justification::bottomLeft);
+    const bool mono = proc.isHostMono();
+    g.drawText (mono ? "MONO OUT" : "MPE OUT", label.removeFromTop (label.getHeight() * 0.5f).reduced (4, 0), juce::Justification::bottomLeft);
     g.setColour (proc.isPortOpen() ? slideCol() : textDim());
     g.setFont (juce::FontOptions (9.0f));
     g.drawText (proc.isPortOpen() ? proc.getPortName() : "port off", label.reduced (4, 0), juce::Justification::topLeft);
+    if (const int t = proc.getTranspose(); t != 0)
+    {
+        g.setColour (chrome());
+        g.drawText ("transpose " + juce::String (t > 0 ? "+" : "") + juce::String (t), label.reduced (4, 0).withTrimmedTop (12),
+                    juce::Justification::topLeft);
+    }
 
     const float w = area.getWidth() / 15.0f;
     static const char* names[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
 
-    for (int ch = 2; ch <= 16; ++ch)
+    for (int ch = mono ? 1 : 2; ch <= (mono ? 1 : 16); ++ch)
     {
-        auto cell = juce::Rectangle<float> (area.getX() + (ch - 2) * w, area.getY(), w, area.getHeight()).reduced (1.5f, 1.0f);
+        // Mono: one wide cell for channel 1.
+        auto cell = (mono ? juce::Rectangle<float> (area.getX(), area.getY(), w * 3.0f, area.getHeight())
+                          : juce::Rectangle<float> (area.getX() + (ch - 2) * w, area.getY(), w, area.getHeight())).reduced (1.5f, 1.0f);
         const auto& m = proc.monitor (ch);
         const int note = m.note.load (std::memory_order_relaxed);
         const bool on = note >= 0;

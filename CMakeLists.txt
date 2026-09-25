@@ -17,6 +17,9 @@ set(ENGINE_SOURCES
     Source/engine/MelodyGenerator.cpp
     Source/engine/VoicingEngine.cpp
     Source/engine/CinematicEngine.cpp
+    Source/engine/HarmonyEngine.cpp
+    Source/engine/Humanize.cpp
+    Source/engine/KitGenerator.cpp
     Source/engine/ExpressionShaper.cpp
     Source/engine/MpeRenderer.cpp
     Source/engine/MidiFileIO.cpp)
@@ -38,9 +41,21 @@ juce_add_plugin(DarkMPE
     AU_MAIN_TYPE kAudioUnitType_MusicDevice
     COPY_PLUGIN_AFTER_BUILD ${DARKMPE_INSTALL})
 
+# JUCE 8.0.10 ad-hoc signs the VST3 bundle before it writes Contents/Resources/moduleinfo.json, so the seal
+# misses that file and hosts reject the bundle ("a sealed resource is missing or invalid"). Sign it again last.
+if(APPLE)
+    add_custom_command(TARGET DarkMPE_VST3 POST_BUILD
+        COMMAND "${CMAKE_COMMAND}"
+            "-Dsrc=$<TARGET_BUNDLE_DIR:DarkMPE_VST3>"
+            "-P" "${JUCE_CMAKE_UTILS_DIR}/checkBundleSigning.cmake"
+        VERBATIM)
+endif()
+
 target_sources(DarkMPE PRIVATE
     ${ENGINE_SOURCES}
     Source/PluginProcessor.cpp
+    Source/PortHub.cpp
+    Source/presets/Presets.cpp
     Source/PluginEditor.cpp
     Source/ui/PianoRoll.cpp
     Source/ui/MpeMonitor.cpp)
@@ -79,6 +94,8 @@ juce_add_console_app(DarkMPEProcessorTests PRODUCT_NAME "DarkMPEProcessorTests")
 target_sources(DarkMPEProcessorTests PRIVATE
     ${ENGINE_SOURCES}
     Source/PluginProcessor.cpp
+    Source/PortHub.cpp
+    Source/presets/Presets.cpp
     Source/PluginEditor.cpp
     Source/ui/PianoRoll.cpp
     Source/ui/MpeMonitor.cpp

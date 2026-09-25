@@ -59,11 +59,9 @@ void shapeExpression (Phrase& phrase, const ExprParams& p)
         const float pressPeak = 0.35f + 0.6f * p.pressureAmount;
         const double breathPhase = voicePos * 0.5 + rng.uniform() * 0.2;
 
-        const int steps = std::max (1, (int) std::ceil (len / curveResolution));
-        for (int i = 0; i <= steps; ++i)
+        // Dense points where the pitch moves fast (glide-in, vibrato), 1/32 beat elsewhere.
+        for (double t = 0.0;;)
         {
-            const double t = std::min (len, i * curveResolution);
-
             float bend = detune + evalCurve (srcBend, t, 0.0f);
             if (glideAmount != 0.0f && t < glideLen)
                 bend += glideAmount * std::pow (1.0f - (float) (t / glideLen), exponent);
@@ -85,6 +83,15 @@ void shapeExpression (Phrase& phrase, const ExprParams& p)
             press += p.breath * 0.15f * (float) std::sin (twoPi * (0.25 * (n.start + t) + breathPhase));
             n.pressure.push_back ({ t, srcPress.empty() ? std::clamp (press, 0.0f, 1.0f)
                                                         : evalCurve (srcPress, t, 0.0f) });
+
+            if (t >= len)
+                break;
+            double step = curveResolution;
+            if (glideAmount != 0.0f && t < glideLen)
+                step = std::min (step, glideLen / 48.0);
+            if (vibrato && t + curveResolution > p.vibratoDelay)
+                step = std::min (step, 1.0 / (16.0 * p.vibratoRate));
+            t = std::min (len, t + step);
         }
 
         n.releaseVelocity = std::clamp (0.3f + 0.4f * n.velocity, 0.0f, 1.0f);

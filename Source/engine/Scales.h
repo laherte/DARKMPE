@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdlib>
 #include <vector>
 
 namespace dmpe::scales
@@ -15,11 +16,16 @@ enum class Scale
     dorian,
     locrian,
     hungarianMinor,
+    doubleHarmonic,
+    neapolitanMinor,
+    aeolianFlat5,
+    minorPentatonic,
     count
 };
 
 inline const char* const scaleNames[] = {
-    "Natural Minor", "Phrygian", "Harmonic Minor", "Phrygian Dominant", "Dorian", "Locrian", "Hungarian Minor"
+    "Natural Minor", "Phrygian", "Harmonic Minor", "Phrygian Dominant", "Dorian", "Locrian", "Hungarian Minor",
+    "Double Harmonic", "Neapolitan Minor", "Aeolian b5", "Minor Pentatonic"
 };
 
 inline const char* const keyNames[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
@@ -34,6 +40,10 @@ inline const std::vector<int>& intervals (Scale s)
         { 0, 2, 3, 5, 7, 9, 10 }, // dorian
         { 0, 1, 3, 5, 6, 8, 10 }, // locrian
         { 0, 2, 3, 6, 7, 8, 11 }, // hungarian minor
+        { 0, 1, 4, 5, 7, 8, 11 }, // double harmonic
+        { 0, 1, 3, 5, 7, 8, 11 }, // neapolitan minor
+        { 0, 2, 3, 5, 6, 8, 10 }, // aeolian b5
+        { 0, 3, 5, 7, 10 },       // minor pentatonic
     } };
     return table[(size_t) s];
 }
@@ -47,6 +57,28 @@ inline int degreeToPitch (int tonicPitch, Scale s, int degree)
     const auto& iv = intervals (s);
     const int n = (int) iv.size();
     return tonicPitch + 12 * floorDiv (degree, n) + iv[(size_t) mod (degree, n)];
+}
+
+// Degrees are written for 7-note scales (progressions, chord tones); on a scale with fewer notes a degree is
+// mapped to the nearest note by pitch (natural minor as the reference).
+inline int mapDegree (Scale s, int degree7)
+{
+    const int n = (int) intervals (s).size();
+    if (n == 7)
+        return degree7;
+    const int target = degreeToPitch (0, Scale::naturalMinor, degree7);
+    const int approx = floorDiv (degree7 * n, 7);
+    int best = approx, bestDistance = 1000;
+    for (int d = approx - 2; d <= approx + 2; ++d)
+    {
+        const int distance = std::abs (degreeToPitch (0, s, d) - target);
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            best = d;
+        }
+    }
+    return best;
 }
 
 inline bool inScale (int pitch, int key, Scale s)

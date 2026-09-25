@@ -2,6 +2,8 @@
 #include "PluginEditor.h"
 
 #include "engine/MidiFileIO.h"
+#include "engine/Humanize.h"
+#include "presets/Presets.h"
 #include "engine/MpeRenderer.h"
 
 #include <cmath>
@@ -25,6 +27,8 @@ constexpr const char* gate = "gate";
 constexpr const char* swing = "swing";
 constexpr const char* baseOct = "baseOct";
 constexpr const char* range = "range";
+constexpr const char* humanize = "humanize";
+constexpr const char* form = "form";
 // voicing
 constexpr const char* vMode = "vMode";
 constexpr const char* voices = "voices";
@@ -48,6 +52,14 @@ constexpr const char* cGlide = "cGlide";
 constexpr const char* cAnticip = "cAnticip";
 constexpr const char* cStagger = "cStagger";
 constexpr const char* cSwell = "cSwell";
+constexpr const char* cProg = "cProg";
+constexpr const char* cChordLen = "cChordLen";
+constexpr const char* cTension = "cTension";
+constexpr const char* cDark = "cDark";
+constexpr const char* cPulse = "cPulse";
+constexpr const char* cArc = "cArc";
+constexpr const char* cFall = "cFall";
+constexpr const char* cSub = "cSub";
 // expression
 constexpr const char* glideTime = "glideTime";
 constexpr const char* glideCurve = "glideCurve";
@@ -62,6 +74,16 @@ constexpr const char* breath = "breath";
 constexpr const char* pbRange = "pbRange";
 constexpr const char* preview = "preview";
 constexpr const char* virtualOut = "virtualOut";
+constexpr const char* leadMono = "leadMono";
+constexpr const char* monoBend = "monoBend";
+constexpr const char* trigMode = "trigMode";
+// kit: per layer (Lead, Bass, Arp, Siren, Stab, Pad)
+constexpr const char* layerOn[] = { "kLead", "kBass", "kArp", "kSiren", "kStab", "kPad" };
+constexpr const char* layerPattern[] = { nullptr, "kBassPat", "kArpPat", "kSirenPat", "kStabPat", nullptr };
+constexpr const char* layerDensity[] = { nullptr, "kBassDen", "kArpDen", "kSirenDen", "kStabDen", nullptr };
+constexpr const char* layerOctave[] = { nullptr, "kBassOct", "kArpOct", "kSirenOct", "kStabOct", nullptr };
+constexpr const char* layerMono[] = { "leadMono", "kBassMono", "kArpMono", "kSirenMono", nullptr, nullptr };
+constexpr const char* kFocus = "kFocus";
 } // namespace ids
 
 static const int barChoices[] = { 1, 2, 4, 8 };
@@ -84,7 +106,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout DarkMPEProcessor::createLayo
 
     auto names = [] (const char* const* arr, int n) { StringArray s; for (int i = 0; i < n; ++i) s.add (arr[i]); return s; };
 
-    choice (ids::mode, "Mode", { "Generate", "Transform", "Cinematic" }, 0);
+    choice (ids::mode, "Mode", { "Generate", "Transform", "Cinematic", "Kit" }, 0);
 
     choice (ids::key, "Key", names (scales::keyNames, 12), 9);
     choice (ids::scale, "Scale", names (scales::scaleNames, (int) scales::Scale::count), 1);
@@ -99,6 +121,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout DarkMPEProcessor::createLayo
     flt (ids::swing, "Swing", 0.0f, 1.0f, 0.0f);
     integer (ids::baseOct, "Octave Base", 1, 5, 3);
     integer (ids::range, "Range", 1, 3, 2);
+    flt (ids::humanize, "Humanize", 0.0f, 1.0f, 0.0f);
+    choice (ids::form, "Form", names (formNames, (int) Form::count), 0);
 
     choice (ids::vMode, "Voicing", names (voicingNames, (int) VoicingMode::count), 2);
     integer (ids::voices, "Voices", 1, 6, 4);
@@ -115,13 +139,21 @@ juce::AudioProcessorValueTreeState::ParameterLayout DarkMPEProcessor::createLayo
     choice (ids::cReharm, "Cine Reharm", names (reharmNames, (int) Reharm::count), 1);
     choice (ids::cVoicing, "Cine Voicing", names (voicingNames, (int) VoicingMode::count), (int) VoicingMode::epicSpread);
     choice (ids::cShape, "Cine Glide Shape", names (glideShapeNames, (int) GlideShape::count), 0);
-    integer (ids::cVoices, "Cine Voices", 2, 6, 6);
+    integer (ids::cVoices, "Cine Voices", 2, 8, 6);
     integer (ids::cLow, "Cine Low Note", 24, 60, 33);
     integer (ids::cHigh, "Cine High Note", 60, 108, 88);
     flt (ids::cGlide, "Cine Glide", 0.05f, 1.0f, 0.5f);
     flt (ids::cAnticip, "Cine Anticipation", 0.0f, 1.0f, 0.5f);
     flt (ids::cStagger, "Cine Stagger", 0.0f, 1.0f, 0.4f);
     flt (ids::cSwell, "Cine Swell", 0.0f, 1.0f, 0.7f);
+    choice (ids::cProg, "Cine Progression", names (progressionNames, (int) Progression::count), 0);
+    choice (ids::cChordLen, "Cine Chord Length", names (chordLengthNames, (int) ChordLength::count), 1);
+    flt (ids::cTension, "Cine Tension", 0.0f, 1.0f, 0.35f);
+    flt (ids::cDark, "Cine Darkness", 0.0f, 1.0f, 0.5f);
+    flt (ids::cPulse, "Cine Pulse Rate", 0.0f, 1.0f, 0.5f);
+    flt (ids::cArc, "Cine Arc", 0.0f, 1.0f, 0.3f);
+    flt (ids::cFall, "Cine Fall", 0.0f, 1.0f, 0.0f);
+    boolean (ids::cSub, "Cine Sub", false);
 
     flt (ids::glideTime, "Glide Time", 0.01f, 0.5f, 0.12f, "beats");
     flt (ids::glideCurve, "Glide Curve", 0.0f, 1.0f, 0.6f);
@@ -136,6 +168,27 @@ juce::AudioProcessorValueTreeState::ParameterLayout DarkMPEProcessor::createLayo
     integer (ids::pbRange, "Bend Range", 1, 96, 48);
     boolean (ids::preview, "Preview", false);
     boolean (ids::virtualOut, "Virtual MIDI Out", true);
+    boolean (ids::leadMono, "Mono Lead Out", false);
+    integer (ids::monoBend, "Mono Bend Range", 1, 48, 12);
+    choice (ids::trigMode, "Key Trigger", { "Off", "Transpose", "Gate" }, 0);
+
+    const StringArray patternNames[] = { {}, names (bassPatternNames, (int) BassPattern::count), names (arpPatternNames, (int) ArpPattern::count),
+                                         names (sirenPatternNames, (int) SirenPattern::count), names (stabPatternNames, (int) StabPattern::count), {} };
+    const float densities[] = { 0.0f, 0.6f, 0.55f, 0.4f, 0.5f, 0.0f };
+    for (int k = 0; k < numLayers; ++k)
+    {
+        const String layer = String ("Kit ") + layerNames[k];
+        boolean (ids::layerOn[k], layer.toRawUTF8(), k != (int) Layer::siren);
+        if (ids::layerPattern[k] != nullptr)
+        {
+            choice (ids::layerPattern[k], (layer + " Pattern").toRawUTF8(), patternNames[k], 0);
+            flt (ids::layerDensity[k], (layer + " Density").toRawUTF8(), 0.0f, 1.0f, densities[k]);
+            integer (ids::layerOctave[k], (layer + " Octave").toRawUTF8(), -2, 2, 0);
+        }
+        if (ids::layerMono[k] != nullptr && k != (int) Layer::lead)
+            boolean (ids::layerMono[k], (layer + " Mono").toRawUTF8(), k == (int) Layer::bass);
+    }
+    choice (ids::kFocus, "Kit Focus", names (layerNames, numLayers), 0);
 
     return l;
 }
@@ -147,6 +200,7 @@ DarkMPEProcessor::DarkMPEProcessor()
       apvts (*this, nullptr, "DarkMPE", createLayout())
 {
     const int instance = ++instanceCounter;
+    instanceNumber = instance;
     portName = instance == 1 ? juce::String ("DarkMPE Out") : "DarkMPE Out " + juce::String (instance);
 
     apvts.state.setProperty ("seed", juce::Random::getSystemRandom().nextInt (100000), nullptr);
@@ -157,54 +211,52 @@ DarkMPEProcessor::DarkMPEProcessor()
             if (wp->paramID != ids::preview)
                 apvts.addParameterListener (wp->paramID, this);
 
+    startTimerHz (4); // watches for the first playback (see allowPorts)
+
+    pbRangeParam = apvts.getRawParameterValue (ids::pbRange);
+    previewParam = apvts.getRawParameterValue (ids::preview);
+    trigModeParam = apvts.getRawParameterValue (ids::trigMode);
+    keyParam = apvts.getRawParameterValue (ids::key);
+
     rebuild();
 }
 
 DarkMPEProcessor::~DarkMPEProcessor()
 {
+    stopTimer();
     cancelPendingUpdate();
-    std::unique_ptr<juce::MidiOutput> old;
+}
+
+juce::String DarkMPEProcessor::getLayerPortName (int layer) const
+{
+    if (layer <= 0)
+        return portName;
+    return "DarkMPE " + juce::String (layerNames[juce::jlimit (0, numLayers - 1, layer)])
+         + (instanceNumber > 1 ? " " + juce::String (instanceNumber) : juce::String());
+}
+
+void DarkMPEProcessor::updatePorts()
+{
+    const bool allowed = portAllowed.load() && pb (ids::virtualOut);
+    ports.setOpen (0, portName, allowed);
+
+    // KIT layers get their own port ("DarkMPE Bass", ...) once used; they stay so Live keeps its routing.
+    for (int l = 1; l < numLayers; ++l)
     {
-        const juce::SpinLock::ScopedLockType sl (portLock);
-        old = std::move (port);
-        portOpen.store (false);
-    }
-    if (old != nullptr)
-    {
-        old->stopBackgroundThread();
-        for (int ch = 1; ch <= 16; ++ch)
-            old->sendMessageNow (juce::MidiMessage::allNotesOff (ch));
+        if (! allowed)
+            layerPortWanted[(size_t) l] = false;
+        else if (getMode() == Mode::kit && pb (ids::layerOn[l]))
+            layerPortWanted[(size_t) l] = true;
+        ports.setOpen (l, getLayerPortName (l), layerPortWanted[(size_t) l]);
     }
 }
 
-void DarkMPEProcessor::updatePort()
+int DarkMPEProcessor::getFocusLayer() const { return pi (ids::kFocus); }
+
+void DarkMPEProcessor::setFocusLayer (int layer)
 {
-    const bool want = portAllowed.load() && pb (ids::virtualOut);
-    if (want == (port != nullptr))
-        return;
-
-    std::unique_ptr<juce::MidiOutput> fresh;
-    if (want)
-    {
-        fresh = juce::MidiOutput::createNewDevice (portName);
-        if (fresh != nullptr)
-            fresh->startBackgroundThread();
-    }
-
-    std::unique_ptr<juce::MidiOutput> old;
-    {
-        const juce::SpinLock::ScopedLockType sl (portLock);
-        old = std::move (port);
-        port = std::move (fresh);
-        portOpen.store (port != nullptr);
-    }
-
-    if (old != nullptr)
-    {
-        old->stopBackgroundThread();
-        for (int ch = 1; ch <= 16; ++ch)
-            old->sendMessageNow (juce::MidiMessage::allNotesOff (ch));
-    }
+    if (auto* p = apvts.getParameter (ids::kFocus))
+        p->setValueNotifyingHost (p->convertTo0to1 ((float) juce::jlimit (0, numLayers - 1, layer)));
 }
 
 bool DarkMPEProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -218,9 +270,23 @@ void DarkMPEProcessor::prepareToPlay (double sr, int)
     sampleRate = sr;
     wasPlaying = false;
 
-    // The port is created on the message thread once the host actually runs us.
+    // Room for a dense block on every layer, so the audio thread never grows a buffer.
+    for (auto& l : layers)
+        l.buffer.ensureSize (32768);
+    hostBuffer.ensureSize (32768);
+
+}
+
+void DarkMPEProcessor::allowPorts()
+{
     if (! portAllowed.exchange (true))
-        triggerAsyncUpdate();
+        triggerAsyncUpdate(); // opened by the rebuild, on the message thread
+}
+
+void DarkMPEProcessor::timerCallback()
+{
+    if (playedOnce.load() && ! portAllowed.load())
+        allowPorts();
 }
 
 // ------------------------------------------------------------------ parameters
@@ -246,6 +312,7 @@ GenParams DarkMPEProcessor::readGenParams() const
     g.rangeOctaves = pi (ids::range);
     g.seed = (int) apvts.state.getProperty ("seed", 1);
     g.variation = (int) apvts.state.getProperty ("variation", 0);
+    g.form = (Form) pi (ids::form);
     return g;
 }
 
@@ -297,14 +364,55 @@ CineParams DarkMPEProcessor::readCineParams() const
     c.anticipation = pf (ids::cAnticip);
     c.stagger = pf (ids::cStagger);
     c.swell = pf (ids::cSwell);
+    c.tension = pf (ids::cTension);
+    c.darkness = pf (ids::cDark);
+    c.pulse = pf (ids::cPulse);
+    c.arc = pf (ids::cArc);
+    c.fall = pf (ids::cFall);
+    c.sub = pb (ids::cSub);
+    c.key = pi (ids::key);
+    c.scale = (scales::Scale) pi (ids::scale);
     c.seed = (int) apvts.state.getProperty ("seed", 1);
     return c;
+}
+
+KitParams DarkMPEProcessor::readKitParams() const
+{
+    KitParams k;
+    k.gen = readGenParams();
+    k.pad = readCineParams();
+    for (int l = 0; l < numLayers; ++l)
+    {
+        auto& lp = k.layers[(size_t) l];
+        lp.on = pb (ids::layerOn[l]);
+        if (ids::layerPattern[l] != nullptr)
+        {
+            lp.pattern = pi (ids::layerPattern[l]);
+            lp.density = pf (ids::layerDensity[l]);
+            lp.octave = pi (ids::layerOctave[l]);
+        }
+    }
+    return k;
+}
+
+HarmonyParams DarkMPEProcessor::readHarmonyParams() const
+{
+    HarmonyParams h;
+    h.key = pi (ids::key);
+    h.scale = (scales::Scale) pi (ids::scale);
+    h.progression = (Progression) pi (ids::cProg);
+    h.chordLength = (ChordLength) pi (ids::cChordLen);
+    h.bars = barChoices[std::clamp (pi (ids::bars), 0, 3)];
+    h.darkness = pf (ids::cDark);
+    h.form = (Form) pi (ids::form);
+    h.seed = (int) apvts.state.getProperty ("seed", 1);
+    return h;
 }
 
 DarkMPEProcessor::Mode DarkMPEProcessor::getMode() const
 {
     const int m = pi (ids::mode);
-    return m == 2 ? Mode::cinematic : (m == 1 ? Mode::transform : Mode::generate);
+    return m == 3 ? Mode::kit : (m == 2 ? Mode::cinematic : (m == 1 ? Mode::transform : Mode::generate));
 }
 
 void DarkMPEProcessor::setMode (Mode m)
@@ -314,34 +422,119 @@ void DarkMPEProcessor::setMode (Mode m)
 }
 
 // ------------------------------------------------------------------ rebuild
+Stream DarkMPEProcessor::makeStream (int layer, Phrase phrase, const ExprParams& expr, bool mono) const
+{
+    // Keep every note-off strictly inside the loop so wrap-around never leaves hanging notes.
+    const double L = phrase.lengthBeats;
+    for (auto& n : phrase.notes)
+        n.length = std::max (1.0 / 64.0, std::min (n.length, L - n.start - 1.0e-3));
+
+    shapeExpression (phrase, expr);
+
+    Stream s;
+    s.layer = layer;
+    s.mono = mono;
+    if (mono)
+    {
+        s.events = toPlayEvents (renderMono (phrase, pi (ids::monoBend), false));
+        s.startup = monoSetupEvents (pi (ids::monoBend));
+    }
+    else
+    {
+        RenderOptions ro;
+        ro.pitchBendRange = pi (ids::pbRange);
+        ro.includeZoneConfig = false; // sent by the audio thread at playback start
+        s.events = toPlayEvents (renderMpe (phrase, ro));
+        s.startup = zoneConfigEvents (ro.pitchBendRange);
+    }
+    s.phrase = std::move (phrase);
+    return s;
+}
+
+void DarkMPEProcessor::buildKit (Rendered& r)
+{
+    const auto kp = readKitParams();
+    const auto expr = readExprParams();
+    const int focus = pi (ids::kFocus);
+    r.lengthBeats = std::clamp (kp.gen.bars, 1, 16) * 4.0;
+
+    for (auto& part : generateKit (kp))
+    {
+        const int l = (int) part.layer;
+        if (part.layer == Layer::lead || part.layer == Layer::bass || part.layer == Layer::arp)
+            dmpe::humanize (part.phrase, pf (ids::humanize), getSeed() + l);
+        const bool mono = ids::layerMono[l] != nullptr && pb (ids::layerMono[l]);
+        if (l == focus)
+            r.focus = (int) r.streams.size();
+        r.streams.push_back (makeStream (l, std::move (part.phrase), expr, mono));
+    }
+
+    if (r.streams.empty()) // every layer off: an empty loop
+    {
+        Phrase silence;
+        silence.lengthBeats = r.lengthBeats;
+        r.streams.push_back (makeStream (0, silence, expr, false));
+    }
+
+    const auto chords = kitChords (kp.gen);
+    for (size_t i = 0; i < chords.size() && i < 16; ++i)
+        harmonyText << (i > 0 ? "  " : "") << chordSymbol (chords[i]);
+}
+
 void DarkMPEProcessor::rebuild()
 {
-    updatePort();
+    const juce::ScopedLock sl (rebuildLock);
+    const bool messageThread = juce::MessageManager::existsAndIsCurrentThread();
+    if (messageThread)
+        updatePorts();
 
     auto r = std::make_shared<Rendered>();
 
-    if (getMode() == Mode::cinematic)
-        r->phrase = cinematic (source.empty() ? demoProgression (pi (ids::key), (scales::Scale) pi (ids::scale),
-                                                                 barChoices[std::clamp (pi (ids::bars), 0, 3)])
-                                              : source,
-                               readCineParams());
+    Phrase main;
+    harmonyText = {};
+    if (getMode() == Mode::kit)
+        buildKit (*r);
+    else if (getMode() == Mode::cinematic)
+    {
+        std::vector<Region> used;
+        if (source.empty())
+        {
+            const auto hp = readHarmonyParams();
+            SectionMarks marks;
+            main = cinematicRegions (generateProgression (hp, &marks), hp.bars * 4.0, readCineParams(), hp.key, &used);
+            for (const auto& [beat, label] : marks)
+                r->sections.push_back ({ beat, juce::String (label) });
+        }
+        else
+            main = cinematic (source, readCineParams(), &used);
+
+        for (size_t i = 0; i < used.size() && i < 24; ++i)
+            harmonyText << (i > 0 ? "  " : "") << chordSymbol (used[i]);
+    }
     else if (getMode() == Mode::transform && ! source.empty())
-        r->phrase = applyVoicing (source, readVoicingParams());
+        main = applyVoicing (source, readVoicingParams());
     else
-        r->phrase = generateMelody (readGenParams());
+        main = generateMelody (readGenParams());
 
-    // Keep every note-off strictly inside the loop so wrap-around never leaves hanging notes.
-    const double L = r->phrase.lengthBeats;
-    for (auto& n : r->phrase.notes)
-        n.length = std::max (1.0 / 64.0, std::min (n.length, L - n.start - 1.0e-3));
+    // Melodic forms: one section per bar (the lead, and the kit layers that follow it).
+    const bool melodic = getMode() == Mode::kit || getMode() == Mode::generate || (getMode() == Mode::transform && source.empty());
+    if (melodic)
+    {
+        const int bars = barChoices[std::clamp (pi (ids::bars), 0, 3)];
+        const auto secs = formSections ((Form) pi (ids::form), bars);
+        for (size_t i = 0; i < secs.size(); ++i)
+            r->sections.push_back ({ (double) i * 4.0, juce::String (secs[i].label) });
+    }
 
-    shapeExpression (r->phrase, readExprParams());
+    if (getMode() != Mode::kit)
+    {
+        if (getMode() != Mode::cinematic)
+            dmpe::humanize (main, pf (ids::humanize), getSeed());
 
-    RenderOptions ro;
-    ro.pitchBendRange = pi (ids::pbRange);
-    ro.includeZoneConfig = false; // the audio thread sends it at playback start
-    r->sequence = renderMpe (r->phrase, ro);
-    r->lengthBeats = L;
+        r->lengthBeats = main.lengthBeats;
+        const bool mono = getMode() == Mode::generate && pb (ids::leadMono);
+        r->streams.push_back (makeStream (0, std::move (main), readExprParams(), mono));
+    }
 
     {
         const juce::SpinLock::ScopedLockType sl (renderLock);
@@ -349,10 +542,15 @@ void DarkMPEProcessor::rebuild()
             keepAlive.push_back (rendered);
         rendered = r;
     }
-    while (keepAlive.size() > 8)
-        keepAlive.pop_front();
 
-    if (onRebuilt)
+    // A render is freed here only once the audio thread has let go of it (it never drops the last reference).
+    keepAlive.erase (std::remove_if (keepAlive.begin(), keepAlive.end(),
+                                     [] (const auto& k) { return k.use_count() == 1; }),
+                     keepAlive.end());
+
+    if (! messageThread)
+        triggerAsyncUpdate(); // ports and UI follow on the message thread
+    else if (onRebuilt)
         onRebuilt();
 }
 
@@ -364,17 +562,106 @@ std::shared_ptr<const Rendered> DarkMPEProcessor::getRendered() const
 
 void DarkMPEProcessor::generateNew()
 {
-    apvts.state.setProperty ("seed", juce::Random::getSystemRandom().nextInt (100000), nullptr);
-    apvts.state.setProperty ("variation", 0, nullptr);
-    if (getMode() != Mode::generate)
-        setMode (Mode::generate);
-    rebuild();
+    if (getMode() == Mode::transform)
+        setMode (Mode::generate); // the seed shapes the lead and the cinematic harmony, not a transform
+    setSeed (juce::Random::getSystemRandom().nextInt (100000), 0);
 }
 
 void DarkMPEProcessor::mutate()
 {
-    apvts.state.setProperty ("variation", (int) apvts.state.getProperty ("variation", 0) + 1, nullptr);
+    setSeed (getSeed(), getVariation() + 1);
+}
+
+// ------------------------------------------------------------------ seed history / favourites
+namespace
+{
+constexpr int maxHistory = 32;
+juce::ValueTree entry (const char* type, int seed, int variation)
+{
+    juce::ValueTree e (type);
+    e.setProperty ("seed", seed, nullptr);
+    e.setProperty ("variation", variation, nullptr);
+    return e;
+}
+bool sameEntry (const juce::ValueTree& e, int seed, int variation)
+{
+    return (int) e.getProperty ("seed") == seed && (int) e.getProperty ("variation") == variation;
+}
+} // namespace
+
+int DarkMPEProcessor::getSeed() const { return (int) apvts.state.getProperty ("seed", 1); }
+int DarkMPEProcessor::getVariation() const { return (int) apvts.state.getProperty ("variation", 0); }
+
+juce::ValueTree DarkMPEProcessor::history()
+{
+    auto h = apvts.state.getOrCreateChildWithName ("History", nullptr);
+    if (h.getNumChildren() == 0)
+    {
+        h.appendChild (entry ("Entry", getSeed(), getVariation()), nullptr);
+        h.setProperty ("index", 0, nullptr);
+    }
+    return h;
+}
+
+void DarkMPEProcessor::setSeed (int seed, int variation)
+{
+    // Like an undo stack: going somewhere new drops the "forward" part.
+    auto h = history();
+    const int index = (int) h.getProperty ("index", 0);
+    while (h.getNumChildren() > index + 1)
+        h.removeChild (h.getNumChildren() - 1, nullptr);
+    h.appendChild (entry ("Entry", seed, variation), nullptr);
+    while (h.getNumChildren() > maxHistory)
+        h.removeChild (0, nullptr);
+    h.setProperty ("index", h.getNumChildren() - 1, nullptr);
+    applySeed (seed, variation);
+}
+
+void DarkMPEProcessor::applySeed (int seed, int variation)
+{
+    apvts.state.setProperty ("seed", seed, nullptr);
+    apvts.state.setProperty ("variation", variation, nullptr);
     rebuild();
+}
+
+bool DarkMPEProcessor::canGoBack() { return (int) history().getProperty ("index", 0) > 0; }
+bool DarkMPEProcessor::canGoForward() { auto h = history(); return (int) h.getProperty ("index", 0) < h.getNumChildren() - 1; }
+
+void DarkMPEProcessor::historyStep (int delta)
+{
+    auto h = history();
+    const int index = juce::jlimit (0, h.getNumChildren() - 1, (int) h.getProperty ("index", 0) + delta);
+    h.setProperty ("index", index, nullptr);
+    const auto e = h.getChild (index);
+    applySeed ((int) e.getProperty ("seed"), (int) e.getProperty ("variation"));
+}
+
+bool DarkMPEProcessor::isFavourite() const
+{
+    for (const auto& f : apvts.state.getChildWithName ("Favourites"))
+        if (sameEntry (f, getSeed(), getVariation()))
+            return true;
+    return false;
+}
+
+void DarkMPEProcessor::toggleFavourite()
+{
+    auto favs = apvts.state.getOrCreateChildWithName ("Favourites", nullptr);
+    for (int i = 0; i < favs.getNumChildren(); ++i)
+        if (sameEntry (favs.getChild (i), getSeed(), getVariation()))
+        {
+            favs.removeChild (i, nullptr);
+            return;
+        }
+    favs.appendChild (entry ("Fav", getSeed(), getVariation()), nullptr);
+}
+
+std::vector<std::pair<int, int>> DarkMPEProcessor::getFavourites() const
+{
+    std::vector<std::pair<int, int>> out;
+    for (const auto& f : apvts.state.getChildWithName ("Favourites"))
+        out.push_back ({ (int) f.getProperty ("seed"), (int) f.getProperty ("variation") });
+    return out;
 }
 
 bool DarkMPEProcessor::loadMidi (const juce::File& file, juce::String& error)
@@ -384,9 +671,12 @@ bool DarkMPEProcessor::loadMidi (const juce::File& file, juce::String& error)
     if (! loadMidiFile (file, p, error, &info))
         return false;
 
-    source = std::move (p);
-    sourceInfo = info;
-    sourceName = file.getFileNameWithoutExtension();
+    {
+        const juce::ScopedLock sl (rebuildLock);
+        source = std::move (p);
+        sourceInfo = info;
+        sourceName = file.getFileNameWithoutExtension();
+    }
     if (getMode() == Mode::generate)
         setMode (Mode::transform);
     rebuild();
@@ -451,9 +741,12 @@ void DarkMPEProcessor::finishCapture()
     if (p.empty())
         return;
 
-    source = std::move (p);
-    sourceInfo = info;
-    sourceName = "Captured";
+    {
+        const juce::ScopedLock sl (rebuildLock);
+        source = std::move (p);
+        sourceInfo = info;
+        sourceName = "Captured";
+    }
     if (getMode() == Mode::generate)
         setMode (Mode::transform);
     rebuild();
@@ -462,8 +755,13 @@ void DarkMPEProcessor::finishCapture()
 // ------------------------------------------------------------------ export
 juce::String DarkMPEProcessor::suggestedFileName() const
 {
+    if (getMode() == Mode::kit)
+        return "DarkMPE Kit " + juce::String (styleNames[pi (ids::style)]) + " " + scales::keyNames[pi (ids::key)]
+             + " " + juce::String (getSeed());
+
     if (getMode() == Mode::cinematic)
-        return "DarkMPE Cinematic " + (source.empty() ? juce::String (scales::keyNames[pi (ids::key)]) : sourceName)
+        return "DarkMPE Cinematic "
+             + (source.empty() ? juce::String (scales::keyNames[pi (ids::key)]) + " " + progressionNames[pi (ids::cProg)] : sourceName)
              + " " + motionNames[pi (ids::cMotion)];
 
     if (getMode() == Mode::transform && ! source.empty())
@@ -473,79 +771,271 @@ juce::String DarkMPEProcessor::suggestedFileName() const
          + " " + juce::String ((int) apvts.state.getProperty ("seed", 0));
 }
 
+juce::MidiFile DarkMPEProcessor::streamFile (const Stream& stream) const
+{
+    RenderOptions ro;
+    ro.pitchBendRange = pi (ids::pbRange);
+    ro.includeZoneConfig = true;
+    const auto seq = stream.mono ? renderMono (stream.phrase, pi (ids::monoBend), true) : renderMpe (stream.phrase, ro);
+    const auto name = getMode() == Mode::kit ? suggestedFileName() + " " + layerNames[stream.layer] : suggestedFileName();
+    return makeMidiFile (seq, lastBpm.load(), name);
+}
+
 juce::File DarkMPEProcessor::writeMidiFile (const juce::File& target) const
 {
     auto r = getRendered();
     if (r == nullptr)
         return {};
-
-    RenderOptions ro;
-    ro.pitchBendRange = pi (ids::pbRange);
-    ro.includeZoneConfig = true;
-    const auto seq = renderMpe (r->phrase, ro);
-    const auto mf = makeMidiFile (seq, lastBpm.load(), suggestedFileName());
-    return dmpe::writeMidiFile (mf, target) ? target : juce::File();
+    return dmpe::writeMidiFile (streamFile (r->focused()), target) ? target : juce::File();
 }
 
-juce::File DarkMPEProcessor::writeTempMidiForDrag() const
+juce::Array<juce::File> DarkMPEProcessor::writeAllStreams (const juce::File& target) const
+{
+    juce::Array<juce::File> written;
+    auto r = getRendered();
+    if (r == nullptr)
+        return written;
+
+    if (r->streams.size() == 1)
+    {
+        if (dmpe::writeMidiFile (streamFile (r->streams.front()), target))
+            written.add (target);
+        return written;
+    }
+
+    for (const auto& s : r->streams)
+    {
+        const auto file = target.getSiblingFile (target.getFileNameWithoutExtension() + " - " + layerNames[s.layer] + ".mid");
+        if (dmpe::writeMidiFile (streamFile (s), file))
+            written.add (file);
+    }
+    return written;
+}
+
+juce::StringArray DarkMPEProcessor::writeTempMidiForDrag() const
 {
     auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("DarkMPE");
     dir.createDirectory();
-    const auto name = juce::File::createLegalFileName (suggestedFileName()) + ".mid";
-    return writeMidiFile (dir.getChildFile (name));
+    juce::StringArray paths;
+    for (const auto& f : writeAllStreams (dir.getChildFile (juce::File::createLegalFileName (suggestedFileName()) + ".mid")))
+        paths.add (f.getFullPathName());
+    return paths;
 }
 
 // ------------------------------------------------------------------ audio
-void DarkMPEProcessor::sendAllNotesOff (juce::MidiBuffer& out, int sampleOffset)
+namespace
+{
+constexpr juce::uint8 noteOffStatus = 0x80;
+
+void pitchBendCentre (juce::MidiBuffer& out, int ch, int sampleOffset)
+{
+    const juce::uint8 centre[3] = { (juce::uint8) (0xe0 | (ch - 1)), 0x00, 0x40 };
+    out.addEvent (centre, 3, sampleOffset);
+}
+
+void addNoteOffs (std::array<std::array<juce::int8, 128>, 17>& table, juce::MidiBuffer& out, int sampleOffset)
+{
+    for (int ch = 1; ch <= 16; ++ch)
+    {
+        bool any = false;
+        for (auto& emitted : table[(size_t) ch])
+            if (emitted >= 0)
+            {
+                const juce::uint8 off[3] = { (juce::uint8) (noteOffStatus | (ch - 1)), (juce::uint8) emitted, 0 };
+                out.addEvent (off, 3, sampleOffset);
+                emitted = -1;
+                any = true;
+            }
+        if (any)
+            pitchBendCentre (out, ch, sampleOffset);
+    }
+}
+
+void addNoteOffs (std::array<std::array<bool, 128>, 17>& table, juce::MidiBuffer& out, int sampleOffset)
 {
     for (int ch = 1; ch <= 16; ++ch)
     {
         bool any = false;
         for (int n = 0; n < 128; ++n)
-            if (active[(size_t) ch][(size_t) n])
+            if (table[(size_t) ch][(size_t) n])
             {
-                out.addEvent (juce::MidiMessage::noteOff (ch, n), sampleOffset);
-                active[(size_t) ch][(size_t) n] = false;
+                const juce::uint8 off[3] = { (juce::uint8) (noteOffStatus | (ch - 1)), (juce::uint8) n, 0 };
+                out.addEvent (off, 3, sampleOffset);
+                table[(size_t) ch][(size_t) n] = false;
                 any = true;
             }
         if (any)
-            out.addEvent (juce::MidiMessage::pitchWheel (ch, 8192), sampleOffset);
-        mon[(size_t) ch].note.store (-1, std::memory_order_relaxed);
+            pitchBendCentre (out, ch, sampleOffset);
     }
 }
 
-void DarkMPEProcessor::finishBlock (juce::MidiBuffer& hostMidi, juce::MidiBuffer& out)
+bool isNoteOn (const juce::uint8* d) { return (d[0] & 0xf0) == 0x90 && d[2] > 0; }
+bool isNoteOff (const juce::uint8* d) { return (d[0] & 0xf0) == 0x80 || ((d[0] & 0xf0) == 0x90 && d[2] == 0); }
+} // namespace
+
+void DarkMPEProcessor::allNotesOff (int sampleOffset)
 {
+    for (auto& l : layers)
+        addNoteOffs (l.active, l.buffer, sampleOffset);
+    addNoteOffs (hostActive, hostBuffer, sampleOffset);
+    for (int ch = 1; ch <= 16; ++ch)
+        mon[(size_t) ch].note.store (-1, std::memory_order_relaxed);
+}
+
+void DarkMPEProcessor::playStream (const Stream& s, double startPpq, double blockBeats, double ppqPerSample, int numSamples)
+{
+    auto& layer = layers[(size_t) s.layer];
+    const double L = audioRendered->lengthBeats;
+    if (startPpq + blockBeats <= 0.0 || L <= 0.0 || s.events.empty())
+        return;
+
+    // Walk the loop, splitting the block at the wrap point.
+    double beatsDone = startPpq < 0.0 ? -startPpq : 0.0;
+    double pos = startPpq >= 0.0 ? std::fmod (startPpq, L) : 0.0;
+
+    while (beatsDone < blockBeats - 1.0e-12)
+    {
+        const double segEnd = std::min (L, pos + (blockBeats - beatsDone));
+        auto it = std::lower_bound (s.events.begin(), s.events.end(), pos,
+                                    [] (const PlayEvent& e, double t) { return e.beat < t; });
+
+        for (; it != s.events.end() && it->beat < segEnd; ++it)
+        {
+            const auto* d = it->data;
+            const int ch = (d[0] & 0x0f) + 1;
+            const int sample = juce::jlimit (0, numSamples - 1, (int) ((beatsDone + (it->beat - pos)) / ppqPerSample));
+            auto& emitted = layer.active[(size_t) ch][d[1]];
+
+            if (isNoteOn (d) || isNoteOff (d))
+            {
+                juce::uint8 msg[3] = { d[0], d[1], d[2] };
+                if (isNoteOn (d))
+                {
+                    if (emitted >= 0) // same source note again on this channel: end the previous one first
+                    {
+                        const juce::uint8 off[3] = { (juce::uint8) (noteOffStatus | (ch - 1)), (juce::uint8) emitted, 0 };
+                        layer.buffer.addEvent (off, 3, sample);
+                    }
+                    msg[1] = (juce::uint8) juce::jlimit (0, 127, d[1] + transpose); // Key Trigger
+                    emitted = (juce::int8) msg[1];
+                }
+                else
+                {
+                    if (emitted < 0)
+                        continue; // its note-on was skipped by a jump
+                    msg[1] = (juce::uint8) emitted; // the pitch it started on, whatever the transpose is now
+                    emitted = -1;
+                }
+                layer.buffer.addEvent (msg, 3, sample);
+                continue;
+            }
+
+            layer.buffer.addEvent (d, it->size, sample);
+        }
+
+        beatsDone += segEnd - pos;
+        pos = segEnd >= L - 1.0e-12 ? 0.0 : segEnd;
+    }
+}
+
+void DarkMPEProcessor::finishBlock (juce::MidiBuffer& hostMidi, int numSamples)
+{
+    // Host output: the focused layer (plus note-offs owed to the host from an earlier focus).
+    hostBuffer.addEvents (layers[(size_t) hostLayer].buffer, 0, numSamples, 0);
+
     // MPE monitor: what each member channel is doing right now.
-    const float range = (float) pi (ids::pbRange);
-    for (const auto meta : out)
+    const float range = pbRangeParam->load (std::memory_order_relaxed);
+    for (const auto meta : hostBuffer)
     {
-        const auto& m = meta.getMessage();
-        const int ch = m.getChannel();
-        if (ch < 1 || ch > 16)
+        const auto* d = meta.data;
+        if (meta.numBytes < 2)
             continue;
+        const int ch = (d[0] & 0x0f) + 1;
         auto& c = mon[(size_t) ch];
-        if (m.isNoteOn())
-            c.note.store (m.getNoteNumber(), std::memory_order_relaxed);
-        else if (m.isNoteOff() && c.note.load (std::memory_order_relaxed) == m.getNoteNumber())
-            c.note.store (-1, std::memory_order_relaxed);
-        else if (m.isPitchWheel())
-            c.bend.store ((float) (m.getPitchWheelValue() - 8192) / 8192.0f * range, std::memory_order_relaxed);
-        else if (m.isController() && m.getControllerNumber() == 74)
-            c.slide.store ((float) m.getControllerValue() / 127.0f, std::memory_order_relaxed);
-        else if (m.isChannelPressure())
-            c.pressure.store ((float) m.getChannelPressureValue() / 127.0f, std::memory_order_relaxed);
+        const int type = d[0] & 0xf0;
+        if (meta.numBytes == 3 && isNoteOn (d))
+        {
+            hostActive[(size_t) ch][d[1]] = true;
+            c.note.store (d[1], std::memory_order_relaxed);
+        }
+        else if (meta.numBytes == 3 && isNoteOff (d))
+        {
+            hostActive[(size_t) ch][d[1]] = false;
+            if (c.note.load (std::memory_order_relaxed) == d[1])
+                c.note.store (-1, std::memory_order_relaxed);
+        }
+        else if (type == 0xe0 && meta.numBytes == 3)
+            c.bend.store ((float) ((d[1] | (d[2] << 7)) - 8192) / 8192.0f * range, std::memory_order_relaxed);
+        else if (type == 0xb0 && meta.numBytes == 3 && d[1] == 74)
+            c.slide.store ((float) d[2] / 127.0f, std::memory_order_relaxed);
+        else if (type == 0xd0)
+            c.pressure.store ((float) d[1] / 127.0f, std::memory_order_relaxed);
     }
 
-    // Same stream to the virtual port: Live receives true MPE from an MPE-enabled input.
-    if (! out.isEmpty())
+    // Each layer to its virtual port: Live receives true MPE from an MPE-enabled input.
+    const double nowMs = juce::Time::getMillisecondCounterHiRes() + 2.0;
+    for (int i = 0; i < PortHub::numPorts; ++i)
+        ports.push (i, layers[(size_t) i].buffer, nowMs, sampleRate);
+
+    hostMidi.clear();
+    hostMidi.addEvents (hostBuffer, 0, numSamples, 0);
+}
+
+void DarkMPEProcessor::readKeys (const juce::MidiBuffer& midi, int trigger, double blockClock, double ppqPerSample)
+{
+    if (trigger == 0)
     {
-        const juce::SpinLock::ScopedTryLockType sl (portLock);
-        if (sl.isLocked() && port != nullptr)
-            port->sendBlockOfMessages (out, juce::Time::getMillisecondCounterHiRes() + 1.0, sampleRate);
+        held.fill (false);
+        heldCount = 0;
+        lastKey = -1;
+        transpose = 0;
+        transposeShown.store (0, std::memory_order_relaxed);
+        return;
     }
 
-    hostMidi.swapWith (out);
+    for (const auto meta : midi)
+    {
+        if (meta.numBytes != 3)
+            continue;
+        const auto* d = meta.data;
+        const int note = d[1];
+        if (isNoteOn (d))
+        {
+            if (heldCount == 0)
+                gateOrigin = blockClock + meta.samplePosition * ppqPerSample; // sample-accurate restart
+            if (! held[(size_t) note])
+            {
+                held[(size_t) note] = true;
+                ++heldCount;
+            }
+            keyOrder[(size_t) note] = ++keyCounter;
+            lastKey = note;
+        }
+        else if (isNoteOff (d) && held[(size_t) note])
+        {
+            held[(size_t) note] = false;
+            --heldCount;
+            if (note == lastKey && heldCount > 0)
+            {
+                // Back to the most recent key still held.
+                juce::uint32 newest = 0;
+                for (int k = 0; k < 128; ++k)
+                    if (held[(size_t) k] && keyOrder[(size_t) k] >= newest)
+                    {
+                        newest = keyOrder[(size_t) k];
+                        lastKey = k;
+                    }
+            }
+        }
+    }
+
+    // Transpose relative to the Key, folded to -5..+6 so the register stays put; it latches after release.
+    if (lastKey >= 0)
+    {
+        int t = scales::mod (lastKey - (int) std::lround (keyParam->load (std::memory_order_relaxed)), 12);
+        transpose = t > 6 ? t - 12 : t;
+    }
+    transposeShown.store (transpose, std::memory_order_relaxed);
 }
 
 void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::MidiBuffer& midi)
@@ -554,14 +1044,18 @@ void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::Midi
     audio.clear();
 
     const int numSamples = audio.getNumSamples();
-    juce::MidiBuffer out;
+    for (auto& l : layers)
+        l.buffer.clear();
+    hostBuffer.clear();
 
     {
         const juce::SpinLock::ScopedTryLockType sl (renderLock);
         if (sl.isLocked() && audioRendered != rendered)
         {
             audioRendered = rendered;
-            sendAllNotesOff (out, 0); // new phrase: silence what is sounding so nothing hangs
+            allNotesOff (0); // new phrase: silence what is sounding so nothing hangs
+            hostLayer = audioRendered->focused().layer;
+            hostMono.store (audioRendered->focused().mono, std::memory_order_relaxed);
         }
     }
 
@@ -604,18 +1098,29 @@ void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::Midi
         }
     }
     captureClock += blockBeats;
-    midi.clear();
+
+    // ---- key trigger (not while capturing: then the input is being recorded)
+    const int trigger = capturing.load() ? 0 : (int) std::lround (trigModeParam->load (std::memory_order_relaxed));
+    const double blockClock = (hostPlaying && hostPpq) ? *hostPpq : freeClock;
+    freeClock += blockBeats;
+    readKeys (midi, trigger, blockClock, ppqPerSample);
 
     // ---- transport
     bool playing = false;
     double startPpq = 0.0;
-    if (hostPlaying && hostPpq)
+    if (trigger == 2)
+    {
+        // Gate: the loop plays while a key is held, from its start at the moment of the first key.
+        playing = heldCount > 0;
+        startPpq = blockClock - gateOrigin;
+    }
+    else if (hostPlaying && hostPpq)
     {
         playing = true;
         startPpq = *hostPpq;
         previewPpq = startPpq;
     }
-    else if (pb (ids::preview))
+    else if (previewParam->load (std::memory_order_relaxed) > 0.5f)
     {
         playing = true;
         startPpq = previewPpq;
@@ -623,76 +1128,44 @@ void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::Midi
     }
 
     playingBack.store (playing);
+    if (playing && ! playedOnce.load (std::memory_order_relaxed))
+        playedOnce.store (true, std::memory_order_relaxed);
 
     if (! playing || audioRendered == nullptr)
     {
         if (wasPlaying)
-            sendAllNotesOff (out, 0);
+            allNotesOff (0);
         wasPlaying = false;
-        finishBlock (midi, out);
+        finishBlock (midi, numSamples);
         return;
     }
 
     if (! wasPlaying || std::abs (startPpq - expectedPpq) > 1.0e-3)
     {
-        sendAllNotesOff (out, 0);
-        for (const auto meta : juce::MPEMessages::setLowerZone (15, pi (ids::pbRange), 2))
-            out.addEvent (meta.getMessage(), 0);
+        allNotesOff (0);
+        for (const auto& s : audioRendered->streams)
+            for (const auto& e : s.startup)
+                layers[(size_t) s.layer].buffer.addEvent (e.data, e.size, 0);
     }
     wasPlaying = true;
     expectedPpq = startPpq + blockBeats;
 
-    const auto& seq = audioRendered->sequence;
     const double L = audioRendered->lengthBeats;
+    playheadBeats.store (startPpq >= 0.0 && L > 0.0 ? std::fmod (startPpq, L) : 0.0);
 
-    if (startPpq + blockBeats <= 0.0 || L <= 0.0)
-    {
-        finishBlock (midi, out);
-        return;
-    }
+    for (const auto& s : audioRendered->streams)
+        playStream (s, startPpq, blockBeats, ppqPerSample, numSamples);
 
-    // Walk the loop, splitting the block at the wrap point.
-    double beatsDone = 0.0;
-    double pos = startPpq >= 0.0 ? std::fmod (startPpq, L) : 0.0;
-    if (startPpq < 0.0)
-        beatsDone = -startPpq;
-
-    playheadBeats.store (pos);
-
-    while (beatsDone < blockBeats - 1.0e-12)
-    {
-        const double segEnd = std::min (L, pos + (blockBeats - beatsDone));
-        for (int i = seq.getNextIndexAtTime (pos); i < seq.getNumEvents(); ++i)
-        {
-            const auto& m = seq.getEventPointer (i)->message;
-            const double t = m.getTimeStamp();
-            if (t >= segEnd)
-                break;
-
-            const int sample = juce::jlimit (0, numSamples - 1, (int) ((beatsDone + (t - pos)) / ppqPerSample));
-            if (m.isNoteOn())
-                active[(size_t) m.getChannel()][(size_t) m.getNoteNumber()] = true;
-            else if (m.isNoteOff())
-            {
-                if (! active[(size_t) m.getChannel()][(size_t) m.getNoteNumber()])
-                    continue; // its note-on was skipped by a jump
-                active[(size_t) m.getChannel()][(size_t) m.getNoteNumber()] = false;
-            }
-            out.addEvent (m, sample);
-        }
-
-        beatsDone += segEnd - pos;
-        pos = segEnd >= L - 1.0e-12 ? 0.0 : segEnd;
-    }
-
-    finishBlock (midi, out);
+    finishBlock (midi, numSamples);
 }
 
 // ------------------------------------------------------------------ state
 void DarkMPEProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
+    const juce::ScopedLock sl (rebuildLock);
     auto state = apvts.copyState();
     state.removeChild (state.getChildWithName ("Source"), nullptr);
+    state.setProperty ("program", currentProgram.load(), nullptr);
 
     if (! source.empty())
     {
@@ -717,6 +1190,7 @@ void DarkMPEProcessor::setStateInformation (const void* data, int sizeInBytes)
     if (xml == nullptr || ! xml->hasTagName (apvts.state.getType()))
         return;
 
+    const juce::ScopedLock sl (rebuildLock);
     auto state = juce::ValueTree::fromXml (*xml);
     const auto src = state.getChildWithName ("Source");
     if (src.isValid())
@@ -739,7 +1213,81 @@ void DarkMPEProcessor::setStateInformation (const void* data, int sizeInBytes)
     }
 
     apvts.replaceState (state);
+
+    // replaceState skips parameters whose value "looks" unchanged (a bool at 0.87 is already "on"): set each one
+    // exactly to the saved value.
+    for (auto* p : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+        {
+            const auto saved = state.getChildWithProperty ("id", rp->paramID);
+            if (! saved.isValid() || ! saved.hasProperty ("value"))
+                continue;
+            const float v = rp->convertTo0to1 ((float) saved.getProperty ("value"));
+            if (std::abs (rp->getValue() - v) > 1.0e-6f)
+                rp->setValueNotifyingHost (v);
+        }
+
+    currentProgram.store (juce::jlimit (0, getNumPrograms() - 1, (int) state.getProperty ("program", 0)));
+    pendingProgram.store (-1);
+
+    // A project is being loaded: this instance is in use, its ports can appear.
+    portAllowed.store (true);
     rebuild();
+}
+
+// ------------------------------------------------------------------ presets
+int DarkMPEProcessor::getNumPrograms() { return (int) presets::factory().size(); }
+
+int DarkMPEProcessor::getCurrentProgram() { return currentProgram.load(); }
+
+const juce::String DarkMPEProcessor::getProgramName (int index)
+{
+    const auto& f = presets::factory();
+    return juce::isPositiveAndBelow (index, (int) f.size()) ? juce::String (f[(size_t) index].name) : juce::String();
+}
+
+void DarkMPEProcessor::setCurrentProgram (int index)
+{
+    // Hosts call this from any thread, and with the current index too (e.g. after restoring a project): only a
+    // change is recorded, and the preset is applied on the message thread.
+    if (! juce::isPositiveAndBelow (index, getNumPrograms()) || index == currentProgram.load())
+        return;
+    currentProgram.store (index);
+    pendingProgram.store (index);
+    triggerAsyncUpdate();
+}
+
+void DarkMPEProcessor::applyPendingProgram()
+{
+    const int index = pendingProgram.exchange (-1);
+    if (! juce::isPositiveAndBelow (index, getNumPrograms()))
+        return;
+    presets::apply (apvts, presets::factory()[(size_t) index]);
+    apvts.state.setProperty ("program", index, nullptr);
+    apvts.state.setProperty ("presetName", getProgramName (index), nullptr);
+}
+
+juce::String DarkMPEProcessor::getPresetName() const
+{
+    return apvts.state.getProperty ("presetName", "Init").toString();
+}
+
+bool DarkMPEProcessor::saveUserPreset (const juce::File& file)
+{
+    if (! presets::save (apvts, getSeed(), getVariation(), file))
+        return false;
+    apvts.state.setProperty ("presetName", file.getFileNameWithoutExtension(), nullptr);
+    return true;
+}
+
+bool DarkMPEProcessor::loadUserPreset (const juce::File& file)
+{
+    int seed = getSeed(), variation = 0;
+    if (! presets::load (apvts, file, seed, variation))
+        return false;
+    apvts.state.setProperty ("presetName", file.getFileNameWithoutExtension(), nullptr);
+    setSeed (seed, variation); // rebuilds
+    return true;
 }
 
 juce::AudioProcessorEditor* DarkMPEProcessor::createEditor()

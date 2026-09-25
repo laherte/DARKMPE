@@ -18,17 +18,20 @@ enum class VoicingMode
     add9_11,
     unisonStack,
     epicSpread,
+    gothic,      // root / fifth low, minor 3rd + maj7 in the middle, b9 ringing on top
+    hyperSpread, // four octaves: root, octave, twelfth, tenths and a ninth two octaves up
     count
 };
 
 inline const char* const voicingNames[] = {
-    "As Played", "Drop 2", "Open Spread", "Dark Cluster", "Quartal", "Power + Oct", "Add 9+11", "Unison Stack", "Epic Spread"
+    "As Played", "Drop 2", "Open Spread", "Dark Cluster", "Quartal", "Power + Oct", "Add 9+11", "Unison Stack",
+    "Epic Spread", "Gothic", "Hyper Spread"
 };
 
 struct VoicingParams
 {
     VoicingMode mode = VoicingMode::openSpread;
-    int voices = 4;           // 2..6
+    int voices = 4;           // 1..8
     int lowPitch = 40;        // E2
     int highPitch = 84;       // C6
     bool bassAnchor = true;   // lowest voice stays on the chord root
@@ -46,6 +49,7 @@ struct Chord
     std::vector<int> pitches; // sorted ascending
     float velocity = 0.8f;
     std::vector<Note> sources; // the input notes of this chord (carry imported MPE expression)
+    int bassPc = -1;           // pitch class of the bass voice when it is not the root (inversion / pedal)
 };
 
 // Groups notes whose onsets fall within `window` beats of the chord's first note (played chords are rarely tight).
