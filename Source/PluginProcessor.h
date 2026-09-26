@@ -10,6 +10,7 @@
 #include "engine/MidiFileIO.h"
 #include "engine/MelodyGenerator.h"
 #include "engine/MpeRenderer.h"
+#include "engine/VoiceGenerator.h"
 #include "engine/VoicingEngine.h"
 #include "model/Phrase.h"
 
@@ -36,6 +37,7 @@ struct Rendered
     int focus = 0;           // index into streams: drawn in the UI, sent to the host MIDI out
     double lengthBeats = 4.0;
     std::vector<std::pair<double, juce::String>> sections; // phrase form: where A, B, C... start (beats)
+    std::vector<std::pair<double, juce::String>> chords;   // GENERATE / KIT: the chords the lines follow (beats)
 
     const Stream& focused() const { return streams[(size_t) focus]; }
 };
@@ -100,7 +102,8 @@ public:
     juce::String describeSource() const; // e.g. "MPE - 14 notes, 12 with expression"
     bool hasSource() const { return ! source.empty(); }
     juce::String getSourceName() const { return sourceName; }
-    juce::String getHarmonyText() const { return harmonyText; } // chord symbols of the cinematic output
+    juce::String getHarmonyText() const { return harmonyText; } // chord symbols of the cinematic output / the lead's chords
+    bool isVoiceEngine() const; // GENERATE's lead engine is Voice
 
     // Presets: factory (also the host's programs) and user files (~/Music/DarkMPE/Presets/*.dmpreset).
     juce::String getPresetName() const;
@@ -171,6 +174,7 @@ private:
     dmpe::HarmonyParams readHarmonyParams() const;
     dmpe::KitParams readKitParams() const;
     void buildKit (Rendered& r);
+    void describeChords (Rendered& r, const std::vector<dmpe::Region>& chords); // chord symbols: status text + piano roll
     juce::MidiFile streamFile (const Stream& s) const;
     float pf (const char* id) const;
     int pi (const char* id) const;

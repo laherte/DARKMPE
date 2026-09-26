@@ -90,4 +90,41 @@ inline bool inScale (int pitch, int key, Scale s)
     return false;
 }
 
+// The nearest note of the scale (ties go up: a borrowed bII becomes ii, not i).
+inline int snap (int pitch, int key, Scale s)
+{
+    for (int d = 0; d < 12; ++d)
+    {
+        if (inScale (pitch + d, key, s))
+            return pitch + d;
+        if (inScale (pitch - d, key, s))
+            return pitch - d;
+    }
+    return pitch;
+}
+
+// The 7-note degree (0..6, as written for progressions) whose note is `interval` semitones above the tonic,
+// -1 if the scale has no such note.
+inline int degreeOf (Scale s, int interval)
+{
+    for (int d = 0; d < 7; ++d)
+        if (mod (degreeToPitch (0, s, mapDegree (s, d)), 12) == mod (interval, 12))
+            return d;
+    return -1;
+}
+
+// The scale note `steps` scale steps away from `pitch` (which is snapped into the scale first).
+inline int stepFrom (int pitch, int key, Scale s, int steps)
+{
+    int p = snap (pitch, key, s);
+    const int dir = steps >= 0 ? 1 : -1;
+    for (int k = 0; k != steps; k += dir)
+    {
+        p += dir;
+        while (! inScale (p, key, s))
+            p += dir;
+    }
+    return p;
+}
+
 } // namespace dmpe::scales

@@ -23,6 +23,9 @@ void setPlain (juce::RangedAudioParameter& p, float plain)
 // Reharm: 0 Off, 1 Sus Resolve, 2 Chromatic Approach, 3 Mediant Shift, 4 Suspensions, 5 Tonic Pedal,
 //         6 Planing, 7 Tritone Approach.
 // Voicing: 2 Open Spread, 3 Dark Cluster, 8 Epic Spread, 9 Gothic, 10 Hyper Spread. Shape: 1 Ease, 3 Swoop Out, 4 Stepped.
+// Engine: 0 Riff, 1 Voice. Voice: 0 Prophet, 1 Lament, 2 Titan, 3 Talkbox. Harmony: 0 Style, 1 Progression, 2 Tonic.
+// Rate: 0 1/4, 1 1/8, 2 1/8T, 3 1/16, 4 1/16T, 5 1/32.
+// New presets go at the end of the list: hosts store programs by index.
 const std::vector<Preset>& factory()
 {
     static const std::vector<Preset> list {
@@ -60,6 +63,14 @@ const std::vector<Preset>& factory()
 
         { "Transform - Epic Spread",  { { "mode", 1 }, { "vMode", 8 }, { "voices", 6 }, { "strum", 0.02f } } },
         { "Transform - Gothic Stack", { { "mode", 1 }, { "vMode", 9 }, { "voices", 6 } } },
+
+        { "Lead - Voice Prophet",   { { "mode", 0 }, { "engine", 1 }, { "voice", 0 }, { "harmony", 1 }, { "cProg", 0 }, { "form", 2 }, { "scale", 0 }, { "vibDepth", 0.25f }, { "inflect", 0.6f } } },
+        { "Lead - Voice Titan",     { { "mode", 0 }, { "engine", 1 }, { "voice", 2 }, { "harmony", 1 }, { "cProg", 3 }, { "baseOct", 2 }, { "octave", 0.6f }, { "inflect", 0.8f }, { "growl", 0.45f }, { "vibDepth", 0.3f }, { "bars", 3 } } },
+        { "Lead - Voice Lament",    { { "mode", 0 }, { "engine", 1 }, { "voice", 1 }, { "harmony", 1 }, { "cProg", 9 }, { "scale", 2 }, { "slide", 0.5f }, { "vowels", 0.5f }, { "form", 5 } } },
+        { "Lead - Talkbox",         { { "mode", 0 }, { "engine", 1 }, { "voice", 3 }, { "density", 0.8f }, { "vowels", 0.9f }, { "growl", 0.1f }, { "gate", 0.7f }, { "scale", 1 } } },
+        { "Lead - Epic Progression",{ { "mode", 0 }, { "style", 0 }, { "harmony", 1 }, { "cProg", 0 }, { "scale", 0 }, { "longNotes", 0.35f }, { "slide", 0.3f } } },
+        { "Lead - Triplet Acid",    { { "mode", 0 }, { "style", 4 }, { "rate", 4 }, { "longNotes", 0.25f }, { "slide", 0.6f }, { "gate", 0.8f } } },
+        { "Kit - Voice over Lament",{ { "mode", 3 }, { "engine", 1 }, { "voice", 2 }, { "harmony", 1 }, { "cProg", 3 }, { "baseOct", 2 }, { "kArp", 0 }, { "kStabPat", 0 } } },
     };
     return list;
 }

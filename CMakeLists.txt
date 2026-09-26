@@ -18,6 +18,8 @@ set(ENGINE_SOURCES
     Source/engine/VoicingEngine.cpp
     Source/engine/CinematicEngine.cpp
     Source/engine/HarmonyEngine.cpp
+    Source/engine/LeadHarmony.cpp
+    Source/engine/VoiceGenerator.cpp
     Source/engine/Humanize.cpp
     Source/engine/KitGenerator.cpp
     Source/engine/ExpressionShaper.cpp

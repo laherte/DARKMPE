@@ -9,8 +9,11 @@
 #include "engine/MidiFileIO.h"
 #include "engine/MpeRenderer.h"
 #include "engine/VoicingEngine.h"
+#include "engine/VoiceGenerator.h"
+#include "engine/LeadHarmony.h"
 
 #include <map>
+#include <tuple>
 #include <set>
 
 using namespace dmpe;
@@ -1208,6 +1211,358 @@ public:
 
 static RenderTests renderTests;
 
+// Notes before `upTo` beats as (start in ms of beats, pitch, glides in).
+static std::vector<std::tuple<long, int, bool>> notesBefore (const Phrase& p, double upTo)
+{
+    std::vector<std::tuple<long, int, bool>> v;
+    for (const auto& n : p.notes)
+        if (n.start < upTo - 1.0e-9)
+            v.push_back ({ std::lround (n.start * 1000.0), n.pitch, n.glideFrom >= 0 });
+    return v;
+}
+
+class V2Tests : public juce::UnitTest
+{
+public:
+    V2Tests() : juce::UnitTest ("DarkMPE V2: harmony, stability, scale lock, rate, voice") {}
+
+    void runTest() override
+    {
+        const ExprParams expr;
+
+        beginTest ("More bars keep the first bars (both engines, every harmony, with and without a form)");
+        for (int engine = 0; engine < (int) LeadEngine::count; ++engine)
+            for (int harmony = 0; harmony < (int) HarmonySource::count; ++harmony)
+                for (Form form : { Form::classic, Form::abac, Form::sentence })
+                    for (int seed = 1; seed <= 12; ++seed)
+                    {
+                        GenParams gp;
+                        gp.engine = (LeadEngine) engine;
+                        gp.harmony = (HarmonySource) harmony;
+                        gp.progression = (Progression) (seed % (int) Progression::count);
+                        gp.form = form;
+                        gp.seed = seed;
+                        gp.style = (Style) (seed % (int) Style::count);
+                        gp.voice = (VoiceStyle) (seed % (int) VoiceStyle::count);
+                        gp.bars = 4;
+                        const auto four = generateLead (gp, expr);
+                        gp.bars = 8;
+                        const auto eight = generateLead (gp, expr);
+                        gp.bars = 2;
+                        const auto two = generateLead (gp, expr);
+                        const juce::String what = juce::String (leadEngineNames[engine]) + " / " + harmonySourceNames[harmony] + " / "
+                                                + formNames[(int) form] + " / seed " + juce::String (seed);
+                        expect (notesBefore (four, 12.0) == notesBefore (eight, 12.0), what + ": 4 -> 8 bars changed the first bars");
+                        expect (notesBefore (two, 4.0) == notesBefore (four, 4.0), what + ": 2 -> 4 bars changed the first bar");
+                    }
+
+        beginTest ("More density only adds notes");
+        for (int style = 0; style < (int) Style::count; ++style)
+        {
+            if ((Style) style == Style::darkArp)
+                continue; // an arpeggio walks through the chord note by note: more notes re-sequence it
+            for (int seed = 1; seed <= 15; ++seed)
+                for (float d = 0.0f; d < 0.9f; d += 0.15f)
+                {
+                    GenParams gp;
+                    gp.style = (Style) style;
+                    gp.seed = seed;
+                    gp.chroma = 0.0f; // approach notes and slides depend on the next note
+                    gp.slide = 0.0f;
+                    gp.density = d;
+                    const auto sparse = generateMelody (gp);
+                    gp.density = d + 0.15f;
+                    const auto dense = generateMelody (gp);
+                    for (const auto& n : sparse.notes)
+                    {
+                        const bool kept = std::any_of (dense.notes.begin(), dense.notes.end(), [&n] (const Note& m)
+                                                       { return std::abs (m.start - n.start) < 1.0e-9 && m.pitch == n.pitch; });
+                        expect (kept, juce::String (styleNames[style]) + " density " + juce::String (d) + ": a note moved");
+                        if (! kept)
+                            break;
+                    }
+                }
+        }
+
+        beginTest ("Scale Lock: every note of every layer in the scale");
+        for (int scale = 0; scale < (int) scales::Scale::count; ++scale)
+            for (int harmony = 0; harmony < (int) HarmonySource::count; ++harmony)
+                for (int seed = 1; seed <= 6; ++seed)
+                {
+                    KitParams kp;
+                    kp.gen.scale = (scales::Scale) scale;
+                    kp.gen.harmony = (HarmonySource) harmony;
+                    kp.gen.progression = (Progression) ((seed * 3 + scale) % (int) Progression::count);
+                    kp.gen.chordLength = (ChordLength) (seed % 3);
+                    kp.gen.seed = seed;
+                    kp.gen.style = (Style) (seed % (int) Style::count);
+                    kp.gen.chroma = 0.5f;
+                    kp.gen.engine = (LeadEngine) (seed % 2);
+                    kp.gen.scaleLock = true;
+                    kp.gen.form = seed % 3 == 0 ? Form::abac : Form::classic;
+                    for (auto& l : kp.layers)
+                        l.pattern = seed % 4;
+                    kp.layers[(size_t) Layer::siren].pattern = seed % 2 == 0 ? (int) SirenPattern::alarm : (int) SirenPattern::fall;
+                    kp.pad.tension = 0.8f;
+                    kp.pad.darkness = 1.0f;
+                    kp.pad.reharm = (Reharm) (seed % (int) Reharm::count);
+                    kp.pad.voicing = seed % 2 == 0 ? VoicingMode::gothic : VoicingMode::darkCluster;
+
+                    for (const auto& part : generateKit (kp))
+                    {
+                        const juce::String what = juce::String (scales::scaleNames[scale]) + " / " + harmonySourceNames[harmony] + " / "
+                                                + layerNames[(int) part.layer] + " / seed " + juce::String (seed);
+                        for (const auto& n : part.phrase.notes)
+                        {
+                            expect (scales::inScale (n.pitch, kp.gen.key, kp.gen.scale), what + ": " + juce::String (n.pitch) + " out of the scale");
+                            if (part.layer == Layer::siren && ! n.bend.empty())
+                            {
+                                // the bends land on scale notes: the highest point (alarm: the third) and the end (fall)
+                                float top = 0.0f;
+                                for (const auto& pt : n.bend)
+                                    top = std::max (top, pt.v);
+                                expect (scales::inScale (n.pitch + (int) std::lround (top), kp.gen.key, kp.gen.scale), what + ": siren peak");
+                                if (kp.layers[(size_t) Layer::siren].pattern == (int) SirenPattern::fall)
+                                    expect (scales::inScale (n.pitch + (int) std::lround (n.bend.back().v), kp.gen.key, kp.gen.scale), what + ": siren fall");
+                            }
+                        }
+                    }
+                }
+
+        beginTest ("Without Scale Lock: chromatic approaches and borrowed chords come back");
+        {
+            GenParams gp;
+            gp.scaleLock = false;
+            gp.chroma = 0.6f;
+            gp.bars = 8;
+            int chromatic = 0;
+            for (const auto& n : generateMelody (gp).notes)
+                chromatic += n.chromatic ? 1 : 0;
+            expectGreaterThan (chromatic, 0);
+
+            // E7 in A natural minor: the lines use A harmonic minor over it (G#), the key scale elsewhere.
+            gp.scale = scales::Scale::naturalMinor;
+            gp.harmony = HarmonySource::progression;
+            gp.progression = Progression::harmonicDominant; // Am F Dm E7
+            const auto track = leadHarmony (gp);
+            expectEquals ((int) track.spans.size(), 8);
+            expectEquals ((int) track.spans[3].scale, (int) scales::Scale::harmonicMinor);
+            expectEquals (track.spans[3].scaleTonic, 9);
+            expect (track.contains (12.0, 68), "G# over E7");
+            expect (! track.contains (0.0, 68), "no G# over Am");
+
+            gp.scaleLock = true; // E7 -> Em7: no G# anywhere
+            const auto locked = leadHarmony (gp);
+            expectEquals (juce::String (chordSymbol (locked.spans[3].chord)), juce::String ("Em7"));
+            expect (! locked.contains (12.0, 68));
+        }
+
+        beginTest ("The lead and the bass follow the chords");
+        for (int harmony = 0; harmony < (int) HarmonySource::count; ++harmony)
+            for (int prog = 0; prog < (int) Progression::count; ++prog)
+                for (int len = 0; len < (int) ChordLength::count; ++len)
+                {
+                    KitParams kp;
+                    kp.gen.harmony = (HarmonySource) harmony;
+                    kp.gen.progression = (Progression) prog;
+                    kp.gen.chordLength = (ChordLength) len;
+                    kp.gen.scaleLock = prog % 2 == 0;
+                    kp.gen.bars = 8;
+                    kp.gen.seed = 3 + prog;
+                    kp.layers[(size_t) Layer::bass].pattern = (int) BassPattern::rolling;
+                    const auto track = leadHarmony (kp.gen);
+                    const juce::String what = juce::String (harmonySourceNames[harmony]) + " / " + progressionNames[prog] + " / "
+                                            + chordLengthNames[len];
+
+                    for (const auto& part : generateKit (kp))
+                    {
+                        if (part.layer == Layer::lead)
+                        {
+                            // Every bar opens on the root of its chord (the pedal of the riff).
+                            for (int bar = 0; bar < 8; ++bar)
+                                for (const auto& n : part.phrase.notes)
+                                    if (std::abs (n.start - bar * 4.0) < 1.0e-9)
+                                        expectEquals (scales::mod (n.pitch, 12), scales::mod (track.at (bar * 4.0).chord.pitches.front(), 12),
+                                                      what + ": bar " + juce::String (bar) + " does not start on the chord root");
+                        }
+                        if (part.layer == Layer::bass)
+                            for (const auto& n : part.phrase.notes)
+                            {
+                                const auto& chord = track.at (std::floor (n.start)).chord;
+                                const int want = chord.bassPc >= 0 ? chord.bassPc : scales::mod (chord.pitches.front(), 12);
+                                expectEquals (scales::mod (n.pitch, 12), want, what + ": the bass is not on the chord's bass");
+                            }
+                    }
+                }
+        {
+            // Tonic: no changes at all.
+            GenParams gp;
+            gp.harmony = HarmonySource::tonic;
+            gp.bars = 8;
+            const auto track = leadHarmony (gp);
+            expectEquals ((int) track.spans.size(), 1);
+            for (int bar = 0; bar < 8; ++bar)
+                expectEquals (track.pitch (bar * 4.0, 57, 0), 57);
+        }
+
+        beginTest ("Rate: the grid of the lead");
+        for (int rate = 0; rate < (int) Rate::count; ++rate)
+            for (int style = 0; style < (int) Style::count; ++style)
+            {
+                GenParams gp;
+                gp.rate = (Rate) rate;
+                gp.style = (Style) style;
+                gp.seed = 20 + style;
+                const auto mel = generateMelody (gp);
+                const double step = 4.0 / stepsPerBar (gp.rate);
+                expect (! mel.empty());
+                for (const auto& n : mel.notes)
+                {
+                    const double k = n.start / step;
+                    expectWithinAbsoluteError (k, std::round (k), 1.0e-6, juce::String (rateNames[rate]) + " / " + styleNames[style] + ": off the grid");
+                }
+                expect (isMonophonic (mel));
+            }
+        {
+            // 1/8: the 8ths are the 16th grid's 8ths, so the line keeps its notes there.
+            GenParams gp;
+            gp.density = 1.0f;
+            gp.style = Style::hateOrGlory;
+            gp.rate = Rate::eighth;
+            const auto eighths = generateMelody (gp);
+            int onBeat = 0;
+            for (const auto& n : eighths.notes)
+                onBeat += std::abs (std::fmod (n.start, 0.5)) < 1.0e-9 ? 1 : 0;
+            expectEquals (onBeat, (int) eighths.notes.size());
+        }
+
+        beginTest ("Long Notes: quarters and halves among the 16ths");
+        {
+            GenParams gp;
+            gp.density = 1.0f;
+            gp.gate = 0.6f;
+            gp.bars = 8;
+            auto longest = [] (const Phrase& p) { double m = 0.0; for (const auto& n : p.notes) m = std::max (m, n.length); return m; };
+            gp.longNotes = 0.0f;
+            const auto plain = generateMelody (gp);
+            gp.longNotes = 1.0f;
+            const auto held = generateMelody (gp);
+            expectLessThan (longest (plain), 0.3);
+            expectGreaterThan (longest (held), 0.45);
+            expectLessThan (held.notes.size(), plain.notes.size());
+        }
+
+        beginTest ("Voice: syllables that talk (vowels, loudness, inflection), one line, in the scale");
+        for (int voice = 0; voice < (int) VoiceStyle::count; ++voice)
+            for (int form = 0; form < (int) Form::count; form += 3)
+                for (int seed = 1; seed <= 4; ++seed)
+                {
+                    GenParams gp;
+                    gp.engine = LeadEngine::voice;
+                    gp.voice = (VoiceStyle) voice;
+                    gp.form = (Form) form;
+                    gp.seed = seed;
+                    gp.bars = 4;
+                    gp.rate = seed == 4 ? Rate::sixteenthTriplet : Rate::sixteenth;
+                    const auto a = generateLead (gp, expr), b = generateLead (gp, expr);
+                    const juce::String what = juce::String (voiceStyleNames[voice]) + " / " + formNames[form] + " / seed " + juce::String (seed);
+
+                    expect (! a.empty(), what);
+                    expect (notesBefore (a, 16.0) == notesBefore (b, 16.0), what + ": not deterministic");
+                    expectLessOrEqual (maxPolyphony (a), 1, what + ": one line");
+                    float slideLow = 1.0f, slideHigh = 0.0f;
+                    for (const auto& n : a.notes)
+                    {
+                        expect (scales::inScale (n.pitch, gp.key, gp.scale), what + ": out of the scale");
+                        expect (n.lockedExpr && ! n.bend.empty() && ! n.slide.empty() && ! n.pressure.empty(), what + ": no expression");
+                        expect (n.start >= 0.0 && n.end() <= a.lengthBeats + 1.0e-6, what + ": outside the loop");
+                        for (const auto& pt : n.slide)
+                        {
+                            slideLow = std::min (slideLow, pt.v);
+                            slideHigh = std::max (slideHigh, pt.v);
+                        }
+                        for (const auto& pt : n.pressure)
+                            expect (pt.v >= 0.0f && pt.v <= 1.0f);
+                    }
+                    expectGreaterThan (slideHigh - slideLow, 0.3f, what + ": the vowels must move");
+
+                    auto shaped = a;
+                    shapeExpression (shaped, expr);
+                    juce::String why;
+                    expect (channelsAreExclusive (renderMpe (shaped), why), what + ": " + why);
+                    expect (renderMono (shaped, 12, true).getNumEvents() > 0);
+                }
+        {
+            // Vowels at 0: the timbre stays put. The sentence ends: a statement falls, a question rises.
+            GenParams gp;
+            gp.engine = LeadEngine::voice;
+            gp.vowels = 0.0f;
+            gp.growl = 0.0f;
+            gp.inflection = 1.0f;
+            gp.form = Form::callResponse; // A (statement) B (question)
+            gp.bars = 2;
+            const auto flat = generateVoice (gp, expr);
+            float lo = 1.0f, hi = 0.0f;
+            for (const auto& n : flat.notes)
+                for (const auto& pt : n.slide)
+                {
+                    lo = std::min (lo, pt.v);
+                    hi = std::max (hi, pt.v);
+                }
+            expectLessThan (hi - lo, 0.02f);
+
+            const Note* lastA = nullptr;
+            const Note* lastB = nullptr;
+            for (const auto& n : flat.notes)
+                (n.start < 4.0 ? lastA : lastB) = &n;
+            expect (lastA != nullptr && lastB != nullptr);
+            if (lastA != nullptr && lastB != nullptr)
+            {
+                expectLessThan (lastA->bend.back().v, -0.5f, "a statement falls at the end");
+                expectGreaterThan (lastB->bend.back().v, 0.5f, "a question rises at the end");
+            }
+        }
+
+        beginTest ("KIT: the Voice lead gives the Stab its accents");
+        {
+            KitParams kp;
+            kp.gen.engine = LeadEngine::voice;
+            kp.layers[(size_t) Layer::stab].pattern = (int) StabPattern::accents;
+            const auto parts = generateKit (kp);
+            std::set<double> accents;
+            size_t stabs = 0;
+            for (const auto& part : parts)
+            {
+                if (part.layer == Layer::lead)
+                    for (const auto& n : part.phrase.notes)
+                        if (n.accent)
+                            accents.insert (std::round (n.start * 4.0) / 4.0);
+                if (part.layer == Layer::stab)
+                    for (const auto& n : part.phrase.notes)
+                    {
+                        ++stabs;
+                        expect (accents.count (n.start) != 0);
+                    }
+            }
+            expectGreaterThan ((int) stabs, 0);
+        }
+
+        beginTest ("Stab: the power chord's fifth is the scale's");
+        {
+            KitParams kp;
+            kp.gen.scale = scales::Scale::locrian; // A Bb C D Eb F G: the fifth over A is Eb
+            kp.gen.harmony = HarmonySource::tonic;
+            kp.layers[(size_t) Layer::stab].pattern = (int) StabPattern::downbeat;
+            for (const auto& part : generateKit (kp))
+                if (part.layer == Layer::stab)
+                    for (const auto& n : part.phrase.notes)
+                        expect (scales::mod (n.pitch, 12) != 4, "E is not in A Locrian");
+        }
+    }
+};
+
+static V2Tests v2Tests;
+
 static EngineTests engineTests;
 static CinematicTests cinematicTests;
 static MpeImportTests mpeImportTests;
@@ -1239,6 +1594,40 @@ static int renderExamples (const juce::File& inDir, const juce::File& outDir)
         save (lead, juce::String ("Lead - ") + styleNames[s]);
         shapeExpression (lead, {});
         write (renderMono (lead, 12, true), juce::String ("Lead - ") + styleNames[s] + " (Mono, bend 12)", lead.notes.size());
+    }
+
+    // V2: the Voice engine over the Epic Minor progression (A B A C: statement, question, statement, close),
+    // a riff that follows a progression with long notes, and a triplet grid.
+    for (int v = 0; v < (int) VoiceStyle::count; ++v)
+    {
+        GenParams gp;
+        gp.engine = LeadEngine::voice;
+        gp.voice = (VoiceStyle) v;
+        gp.seed = 777 + v;
+        gp.form = Form::abac;
+        gp.harmony = HarmonySource::progression;
+        gp.progression = (VoiceStyle) v == VoiceStyle::titan ? Progression::lamentBass : Progression::epicMinor;
+        gp.baseOctave = (VoiceStyle) v == VoiceStyle::titan ? 2 : 3;
+        ExprParams ep;
+        ep.vibratoDepth = 0.25f;
+        auto lead = generateLead (gp, ep);
+        save (lead, juce::String ("Voice - ") + voiceStyleNames[v]);
+        shapeExpression (lead, ep);
+        write (renderMono (lead, 12, true), juce::String ("Voice - ") + voiceStyleNames[v] + " (Mono, bend 12)", lead.notes.size());
+    }
+    {
+        GenParams gp;
+        gp.seed = 666;
+        gp.harmony = HarmonySource::progression;
+        gp.progression = Progression::harmonicDominant;
+        gp.longNotes = 0.4f;
+        save (generateMelody (gp), "Lead - Pursuit over Harmonic Dominant, long notes");
+        gp = {};
+        gp.seed = 667;
+        gp.style = Style::acidSlide;
+        gp.rate = Rate::sixteenthTriplet;
+        gp.longNotes = 0.25f;
+        save (generateMelody (gp), "Lead - Acid Slide 1-16T");
     }
 
     // Phrase forms: the same seed as classic, as A B A C / period / sentence / sequence (8 bars).
@@ -1390,7 +1779,7 @@ int main (int argc, char** argv)
 
     juce::UnitTestRunner runner;
     runner.setAssertOnFailure (false);
-    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &harmonyTests, &kitTests, &formTests, &renderTests });
+    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &harmonyTests, &kitTests, &formTests, &renderTests, &v2Tests });
 
     int failures = 0;
     for (int i = 0; i < runner.getNumResults(); ++i)

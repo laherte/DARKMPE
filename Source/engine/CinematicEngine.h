@@ -58,6 +58,7 @@ struct CineParams
     float arc = 0.0f;          // phrase-long crescendo towards the last bar
     float fall = 0.0f;         // pitch falls at the end of chords
     bool sub = false;          // extra voice an octave under the bass
+    bool scaleLock = false;    // colours, reharm and suspensions pulled into key/scale (the KIT pad with Scale Lock)
     int key = 9;               // Stepped glides walk through this key/scale
     scales::Scale scale = scales::Scale::naturalMinor;
     int seed = 1;

@@ -104,6 +104,7 @@ void DarkMPEEditor::DragOut::mouseDrag (const juce::MouseEvent& e)
 DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     : AudioProcessorEditor (&p), proc (p),
       previewToggle (p.apvts, "preview", "Preview"),
+      scaleLockToggle (p.apvts, "scaleLock", "In Scale"),
       formChoice (p.apvts, "form", "Phrase Form"),
       roll (p),
       monitor (p)
@@ -192,6 +193,9 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     for (auto* b : { &newBtn, &mutateBtn, &loadBtn, &captureBtn, &exportBtn, &scaleBtn, &prevBtn, &nextBtn, &seedBtn, &favBtn, &presetBtn })
         content.addAndMakeVisible (*b);
     content.addAndMakeVisible (previewToggle);
+    content.addChildComponent (scaleLockToggle);
+    scaleLockToggle.button.setTooltip ("Scale Lock (Generate, Kit): every note in the Key and Scale - chords, approach notes, "
+                                       "power fifths, siren bends and pad colours included. Off: chromatic approaches and borrowed chords");
     content.addAndMakeVisible (formChoice);
     formChoice.box.setTooltip ("Classic, or call & response: A B A C, A A B A, A A A B, period, sentence, sequence");
     content.addAndMakeVisible (dragOut);
@@ -207,14 +211,30 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     auto choice = [&] (auto& list, const char* id, const char* label) { list.push_back (std::make_unique<Choice> (s, id, label)); };
     auto toggle = [&] (auto& list, const char* id, const char* label) { list.push_back (std::make_unique<Toggle> (s, id, label)); };
 
+    choice (genControls, "engine", "Engine");
     choice (genControls, "style", "Style");
+    riffOnly.push_back (genControls.back().get());
+    choice (genControls, "voice", "Voice");
+    voiceOnly.push_back (genControls.back().get());
     choice (genControls, "key", "Key");
     choice (genControls, "scale", "Scale");
     choice (genControls, "bars", "Bars");
-    for (auto [id, label] : { std::pair { "density", "Density" }, { "pedal", "Pedal" }, { "octave", "Octave" },
-                              { "chroma", "Chroma" }, { "slide", "Slide" }, { "gate", "Gate" }, { "swing", "Swing" },
+    choice (genControls, "harmony", "Harmony");
+    choice (genControls, "rate", "Rate");
+    for (auto [id, label] : { std::pair { "density", "Density" }, { "longNotes", "Long Notes" }, { "pedal", "Pedal" },
+                              { "octave", "Octave" }, { "chroma", "Chroma" }, { "slide", "Slide" }, { "gate", "Gate" },
+                              { "swing", "Swing" }, { "vowels", "Vowels" }, { "inflect", "Inflection" }, { "growl", "Growl" },
                               { "baseOct", "Oct Base" }, { "range", "Range" }, { "humanize", "Humanize" } })
+    {
         knob (genControls, id, label);
+        const juce::String name (id);
+        if (name == "chroma" || name == "humanize")
+            riffOnly.push_back (genControls.back().get());
+        if (name == "vowels" || name == "inflect" || name == "growl")
+            voiceOnly.push_back (genControls.back().get());
+        if (name == "pedal")
+            pedalKnob = dynamic_cast<Knob*> (genControls.back().get());
+    }
 
     choice (voiceControls, "vMode", "Voicing");
     toggle (voiceControls, "voiceLead", "Voice Lead");
@@ -258,12 +278,13 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     choice (kitControls, "key", "Key");
     choice (kitControls, "scale", "Scale");
     choice (kitControls, "bars", "Bars");
+    choice (kitControls, "harmony", "Harmony");
     layerRows.push_back (std::make_unique<LayerRow> (proc, 0, "kLead", nullptr, nullptr, nullptr, "leadMono", "lead from GENERATE"));
     layerRows.push_back (std::make_unique<LayerRow> (proc, 1, "kBass", "kBassPat", "kBassDen", "kBassOct", "kBassMono", ""));
     layerRows.push_back (std::make_unique<LayerRow> (proc, 2, "kArp", "kArpPat", "kArpDen", "kArpOct", "kArpMono", ""));
     layerRows.push_back (std::make_unique<LayerRow> (proc, 3, "kSiren", "kSirenPat", "kSirenDen", "kSirenOct", "kSirenMono", ""));
     layerRows.push_back (std::make_unique<LayerRow> (proc, 4, "kStab", "kStabPat", "kStabDen", "kStabOct", nullptr, ""));
-    layerRows.push_back (std::make_unique<LayerRow> (proc, 5, "kPad", "cMotion", nullptr, nullptr, nullptr, "harmony from CINEMATIC"));
+    layerRows.push_back (std::make_unique<LayerRow> (proc, 5, "kPad", "cMotion", nullptr, nullptr, nullptr, "kit chords, CINEMATIC sound"));
     for (auto& row : layerRows)
         content.addChildComponent (*row);
 
@@ -277,7 +298,7 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     proc.onRebuilt = [this]
     {
         roll.refresh();
-        if (proc.getMode() == DarkMPEProcessor::Mode::cinematic || proc.getMode() == DarkMPEProcessor::Mode::kit)
+        if (proc.getMode() != DarkMPEProcessor::Mode::transform)
             showHarmony();
         for (auto& row : layerRows)
             row->repaint();
@@ -307,7 +328,7 @@ DarkMPEEditor::~DarkMPEEditor()
 
 void DarkMPEEditor::timerCallback()
 {
-    if (proc.getMode() != shownMode)
+    if (proc.getMode() != shownMode || proc.isVoiceEngine() != shownVoice)
         updateModeVisibility();
     updateSeedControls();
 }
@@ -441,6 +462,13 @@ void DarkMPEEditor::showSeedMenu()
 
 void DarkMPEEditor::showHarmony()
 {
+    if (proc.getMode() == DarkMPEProcessor::Mode::generate)
+    {
+        const auto* h = proc.apvts.getParameter ("harmony");
+        setStatus ((proc.isVoiceEngine() ? "Voice over:  " : "Lead over:  ") + proc.getHarmonyText()
+                   + "   (" + (h != nullptr ? h->getCurrentValueAsText() : juce::String()) + ")");
+        return;
+    }
     if (proc.getMode() == DarkMPEProcessor::Mode::kit)
     {
         const int focus = proc.getFocusLayer();
@@ -463,7 +491,13 @@ void DarkMPEEditor::updateModeVisibility()
     xformTab.setToggleState (xform, juce::dontSendNotification);
     cineTab.setToggleState (cine, juce::dontSendNotification);
     kitTab.setToggleState (kit, juce::dontSendNotification);
+    shownVoice = proc.isVoiceEngine();
     for (auto& c : genControls) c->setVisible (gen);
+    for (auto* c : riffOnly) c->setVisible (gen && ! shownVoice);
+    for (auto* c : voiceOnly) c->setVisible (gen && shownVoice);
+    if (pedalKnob != nullptr)
+        pedalKnob->label.setText (shownVoice ? "RECITE" : "PEDAL", juce::dontSendNotification);
+    scaleLockToggle.setVisible (gen || kit);
     for (auto& c : voiceControls) c->setVisible (xform);
     for (auto& c : cineControls) c->setVisible (cine);
     for (auto& c : kitControls) c->setVisible (kit);
@@ -471,7 +505,7 @@ void DarkMPEEditor::updateModeVisibility()
     mutateBtn.setEnabled (gen || kit);
     if (xform && proc.hasSource())
         setStatus ("Source: " + proc.getSourceName() + "  -  " + proc.describeSource());
-    if (cine || kit)
+    if (! xform)
         showHarmony();
     layoutContent();
     content.repaint();
@@ -596,6 +630,7 @@ void DarkMPEEditor::layoutContent()
     bar.removeFromRight (6);
     exportBtn.setBounds (bar.removeFromRight (80).reduced (2, 3));
     previewToggle.setBounds (bar.removeFromRight (84).withTrimmedTop (-2).withTrimmedBottom (-2));
+    scaleLockToggle.setBounds (bar.removeFromRight (90).withTrimmedTop (-2).withTrimmedBottom (-2));
     status.setBounds (bar.reduced (8, 0));
 
     r.removeFromTop (4);
@@ -619,6 +654,8 @@ void DarkMPEEditor::layoutContent()
         fb.alignContent = juce::FlexBox::AlignContent::flexStart;
         for (auto& c : list)
         {
+            if (! c->isVisible())
+                continue; // e.g. the controls of the other lead engine
             int cw = knobW, ch = knobH;
             if (dynamic_cast<Choice*> (c.get()) != nullptr) { cw = choiceW; ch = choiceH; }
             if (dynamic_cast<Toggle*> (c.get()) != nullptr) { cw = toggleW; ch = toggleH; }

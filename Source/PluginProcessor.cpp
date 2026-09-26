@@ -29,6 +29,15 @@ constexpr const char* baseOct = "baseOct";
 constexpr const char* range = "range";
 constexpr const char* humanize = "humanize";
 constexpr const char* form = "form";
+constexpr const char* engine = "engine";
+constexpr const char* voice = "voice";
+constexpr const char* harmony = "harmony";
+constexpr const char* rate = "rate";
+constexpr const char* longNotes = "longNotes";
+constexpr const char* scaleLock = "scaleLock";
+constexpr const char* vowels = "vowels";
+constexpr const char* inflect = "inflect";
+constexpr const char* growl = "growl";
 // voicing
 constexpr const char* vMode = "vMode";
 constexpr const char* voices = "voices";
@@ -123,6 +132,15 @@ juce::AudioProcessorValueTreeState::ParameterLayout DarkMPEProcessor::createLayo
     integer (ids::range, "Range", 1, 3, 2);
     flt (ids::humanize, "Humanize", 0.0f, 1.0f, 0.0f);
     choice (ids::form, "Form", names (formNames, (int) Form::count), 0);
+    choice (ids::engine, "Lead Engine", names (leadEngineNames, (int) LeadEngine::count), 0);
+    choice (ids::voice, "Voice Style", names (voiceStyleNames, (int) VoiceStyle::count), 0);
+    choice (ids::harmony, "Harmony", names (harmonySourceNames, (int) HarmonySource::count), 0);
+    choice (ids::rate, "Rate", names (rateNames, (int) Rate::count), (int) Rate::sixteenth);
+    flt (ids::longNotes, "Long Notes", 0.0f, 1.0f, 0.0f);
+    boolean (ids::scaleLock, "Scale Lock", true);
+    flt (ids::vowels, "Vowels", 0.0f, 1.0f, 0.6f);
+    flt (ids::inflect, "Inflection", 0.0f, 1.0f, 0.5f);
+    flt (ids::growl, "Growl", 0.0f, 1.0f, 0.2f);
 
     choice (ids::vMode, "Voicing", names (voicingNames, (int) VoicingMode::count), 2);
     integer (ids::voices, "Voices", 1, 6, 4);
@@ -313,8 +331,22 @@ GenParams DarkMPEProcessor::readGenParams() const
     g.seed = (int) apvts.state.getProperty ("seed", 1);
     g.variation = (int) apvts.state.getProperty ("variation", 0);
     g.form = (Form) pi (ids::form);
+    g.engine = (LeadEngine) pi (ids::engine);
+    g.voice = (VoiceStyle) pi (ids::voice);
+    g.harmony = (HarmonySource) pi (ids::harmony);
+    g.rate = (Rate) pi (ids::rate);
+    g.longNotes = pf (ids::longNotes);
+    g.scaleLock = pb (ids::scaleLock);
+    g.vowels = pf (ids::vowels);
+    g.inflection = pf (ids::inflect);
+    g.growl = pf (ids::growl);
+    g.progression = (Progression) pi (ids::cProg);
+    g.chordLength = (ChordLength) pi (ids::cChordLen);
+    g.darkness = pf (ids::cDark);
     return g;
 }
+
+bool DarkMPEProcessor::isVoiceEngine() const { return pi (ids::engine) == (int) LeadEngine::voice; }
 
 VoicingParams DarkMPEProcessor::readVoicingParams() const
 {
@@ -381,6 +413,7 @@ KitParams DarkMPEProcessor::readKitParams() const
     KitParams k;
     k.gen = readGenParams();
     k.pad = readCineParams();
+    k.expr = readExprParams();
     for (int l = 0; l < numLayers; ++l)
     {
         auto& lp = k.layers[(size_t) l];
@@ -476,9 +509,18 @@ void DarkMPEProcessor::buildKit (Rendered& r)
         r.streams.push_back (makeStream (0, silence, expr, false));
     }
 
-    const auto chords = kitChords (kp.gen);
-    for (size_t i = 0; i < chords.size() && i < 16; ++i)
-        harmonyText << (i > 0 ? "  " : "") << chordSymbol (chords[i]);
+    describeChords (r, kitChords (kp.gen));
+}
+
+void DarkMPEProcessor::describeChords (Rendered& r, const std::vector<Region>& chords)
+{
+    for (size_t i = 0; i < chords.size(); ++i)
+    {
+        const juce::String symbol (chordSymbol (chords[i]));
+        r.chords.push_back ({ chords[i].start, symbol });
+        if (i < 16)
+            harmonyText << (i > 0 ? "  " : "") << symbol;
+    }
 }
 
 void DarkMPEProcessor::rebuild()
@@ -508,13 +550,22 @@ void DarkMPEProcessor::rebuild()
         else
             main = cinematic (source, readCineParams(), &used);
 
-        for (size_t i = 0; i < used.size() && i < 24; ++i)
-            harmonyText << (i > 0 ? "  " : "") << chordSymbol (used[i]);
+        for (size_t i = 0; i < used.size(); ++i)
+        {
+            const juce::String symbol (chordSymbol (used[i]));
+            r->chords.push_back ({ used[i].start, symbol });
+            if (i < 24)
+                harmonyText << (i > 0 ? "  " : "") << symbol;
+        }
     }
     else if (getMode() == Mode::transform && ! source.empty())
         main = applyVoicing (source, readVoicingParams());
     else
-        main = generateMelody (readGenParams());
+    {
+        const auto gen = readGenParams();
+        main = generateLead (gen, readExprParams());
+        describeChords (*r, leadHarmony (gen).chords());
+    }
 
     // Melodic forms: one section per bar (the lead, and the kit layers that follow it).
     const bool melodic = getMode() == Mode::kit || getMode() == Mode::generate || (getMode() == Mode::transform && source.empty());
@@ -767,8 +818,8 @@ juce::String DarkMPEProcessor::suggestedFileName() const
     if (getMode() == Mode::transform && ! source.empty())
         return "DarkMPE " + sourceName + " " + juce::String (voicingNames[pi (ids::vMode)]);
 
-    return "DarkMPE " + juce::String (styleNames[pi (ids::style)]) + " " + scales::keyNames[pi (ids::key)]
-         + " " + juce::String ((int) apvts.state.getProperty ("seed", 0));
+    const juce::String lead = isVoiceEngine() ? "Voice " + juce::String (voiceStyleNames[pi (ids::voice)]) : juce::String (styleNames[pi (ids::style)]);
+    return "DarkMPE " + lead + " " + scales::keyNames[pi (ids::key)] + " " + juce::String ((int) apvts.state.getProperty ("seed", 0));
 }
 
 juce::MidiFile DarkMPEProcessor::streamFile (const Stream& stream) const

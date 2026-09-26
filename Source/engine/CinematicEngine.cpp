@@ -1,4 +1,5 @@
 #include "CinematicEngine.h"
+#include "LeadHarmony.h"
 #include "ExpressionShaper.h"
 #include "Rng.h"
 
@@ -353,6 +354,8 @@ Phrase cinematicRegions (std::vector<Region> regions, double lengthBeats, const 
 
     colourRegions (regions, p.tension, p.darkness, p.seed);
     regions = reharmonise (std::move (regions), p.reharm, tonicPc);
+    if (p.scaleLock)
+        lockRegions (regions, p.key, p.scale);
     if (usedRegions != nullptr)
         *usedRegions = regions;
 
@@ -374,6 +377,9 @@ Phrase cinematicRegions (std::vector<Region> regions, double lengthBeats, const 
         c.pitches = r.pitches;
         c.bassPc = r.bassPc;
         slots.push_back (voiceChordSlots (c, vp, slots.empty() ? nullptr : &slots.back()));
+        if (p.scaleLock) // voicings that add their own colours (Gothic's b9, Dark Cluster...)
+            for (auto& slot : slots.back())
+                slot = scales::snap (slot, p.key, p.scale);
     }
 
     // Sub: one more voice an octave under the bass, following it.
@@ -398,8 +404,13 @@ Phrase cinematicRegions (std::vector<Region> regions, double lengthBeats, const 
             int placed = 0;
             for (int k = n - 1; k > bassSlot && placed < 2; --k)
                 if (susRng.chance (0.55f))
-                    if (const int s = suspensionFor (slots[r][(size_t) k], regions[r].pitches.front(), p.darkness); s != 0)
+                    if (int s = suspensionFor (slots[r][(size_t) k], regions[r].pitches.front(), p.darkness); s != 0)
                     {
+                        // Scale Lock: the suspended note must be a scale note (the other step size, or none).
+                        if (p.scaleLock && ! scales::inScale (slots[r][(size_t) k] + s, p.key, p.scale))
+                            s = scales::inScale (slots[r][(size_t) k] + 3 - s, p.key, p.scale) ? 3 - s : 0;
+                        if (s == 0)
+                            continue;
                         sus[r][(size_t) k] = s;
                         ++placed;
                     }

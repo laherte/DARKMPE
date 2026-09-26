@@ -257,6 +257,34 @@ public:
             checkMpe (run (proc, blocksFor8Bars, blockSize, clock), "generate", 1);
         }
 
+        beginTest ("Voice lead: MPE with vowels on CC74 and pressure, chords shown for the lead");
+        {
+            DarkMPEProcessor proc;
+            setParam (proc, "virtualOut", 0.0f);
+            setParam (proc, "mode", 0.0f);
+            setParam (proc, "engine", 1.0f);
+            setParam (proc, "voice", 2.0f); // Titan
+            setParam (proc, "harmony", 1.0f); // the CINEMATIC progression
+            setParam (proc, "cProg", 2.0f);   // Harmonic Dominant
+            setParam (proc, "preview", 1.0f);
+            proc.refreshNow();
+            expect (proc.isVoiceEngine());
+            expectEquals (proc.getHarmonyText().upToFirstOccurrenceOf ("  ", false, false), juce::String ("Am"));
+            expectGreaterThan ((int) proc.getRendered()->chords.size(), 3);
+            proc.prepareToPlay (48000.0, blockSize);
+            long long clock = 0;
+            const auto events = run (proc, blocksFor8Bars, blockSize, clock);
+            checkMpe (events, "voice", 1);
+            int cc74 = 0, pressure = 0;
+            for (const auto& e : events)
+            {
+                cc74 += e.msg.isController() && e.msg.getControllerNumber() == 74 ? 1 : 0;
+                pressure += e.msg.isChannelPressure() ? 1 : 0;
+            }
+            expectGreaterThan (cc74, 50);
+            expectGreaterThan (pressure, 50);
+        }
+
         beginTest ("Mono lead: channel 1 with its bend range, no MPE zone");
         {
             DarkMPEProcessor proc;
@@ -589,12 +617,18 @@ static ProcessorTests processorTests;
 static int snapshots (const juce::File& dir)
 {
     dir.createDirectory();
-    const char* modeNames[] = { "Generate", "Transform", "Cinematic", "Kit" };
-    for (int mode = 0; mode < 4; ++mode)
+    const char* modeNames[] = { "Generate", "Transform", "Cinematic", "Kit", "Generate Voice" };
+    for (int shot = 0; shot < 5; ++shot)
         for (float scale : { 1.0f, 0.75f })
         {
+            const int mode = shot == 4 ? 0 : shot;
             DarkMPEProcessor proc;
             setParam (proc, "virtualOut", 0.0f);
+            if (shot == 4)
+            {
+                setParam (proc, "engine", 1.0f);
+                setParam (proc, "harmony", 1.0f);
+            }
             if (mode == 1)
             {
                 juce::String err;
@@ -613,7 +647,7 @@ static int snapshots (const juce::File& dir)
             proc.apvts.state.setProperty ("uiScale", scale, nullptr);
             std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
             const auto image = editor->createComponentSnapshot (editor->getLocalBounds(), true, 1.0f);
-            const auto file = dir.getChildFile (juce::String (modeNames[mode]) + " " + juce::String (juce::roundToInt (scale * 100)) + ".png");
+            const auto file = dir.getChildFile (juce::String (modeNames[shot]) + " " + juce::String (juce::roundToInt (scale * 100)) + ".png");
             file.deleteFile();
             juce::FileOutputStream out (file);
             juce::PNGImageFormat png;

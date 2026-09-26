@@ -225,6 +225,20 @@ void PianoRoll::drawStatic (juce::Graphics& g)
         g.drawText (label, tag, juce::Justification::centred);
     }
 
+    // the chords the lines follow, at the bottom of the roll
+    const auto& chords = shown->chords;
+    g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+    for (size_t i = 0; i < chords.size(); ++i)
+    {
+        const float x = xOf (chords[i].first, roll);
+        const float next = i + 1 < chords.size() ? xOf (chords[i + 1].first, roll) : roll.getRight();
+        g.setColour (chrome().withAlpha (0.25f));
+        g.drawVerticalLine ((int) x, roll.getBottom() - 16.0f, roll.getBottom());
+        g.setColour (chrome().withAlpha (0.7f));
+        g.drawText (chords[i].second, juce::Rectangle<float> (x + 3.0f, roll.getBottom() - 16.0f, std::max (8.0f, next - x - 5.0f), 14.0f),
+                    juce::Justification::centredLeft, true);
+    }
+
     g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
     g.setColour (slideCol());
     g.drawText ("SLIDE / CC74", slideLane.reduced (4, 2), juce::Justification::topLeft);

@@ -1,6 +1,7 @@
 #include "KitGenerator.h"
 #include "ExpressionShaper.h"
 #include "Rng.h"
+#include "VoiceGenerator.h"
 
 #include <algorithm>
 #include <cmath>
@@ -15,29 +16,16 @@ using scales::mod;
 
 int barsOf (const GenParams& g) { return std::clamp (g.bars, 1, 16); }
 
-int rootDegree (const GenParams& g, int bar)
-{
-    const auto& prog = styleProgression (g.style);
-    return prog[(size_t) (bar % (int) prog.size())];
-}
-
-int pitchOf (const GenParams& g, int tonicPitch, int degree)
-{
-    return scales::degreeToPitch (tonicPitch, g.scale, scales::mapDegree (g.scale, degree));
-}
-
 Rng layerRng (const GenParams& g, Layer l)
 {
     return Rng ((uint64_t) g.seed * 2246822519ull + (uint64_t) l * 3266489917ull + (uint64_t) g.variation * 668265263ull + 1ull);
 }
 
-// With a phrase form, the same section label gives the same random choices (A bars repeat exactly).
+// One bar's decisions. With a phrase form the same section label gives the same random choices (A bars repeat
+// exactly); without, each bar has its own, so more bars never change the first ones.
 Rng sectionRng (const GenParams& g, Layer l, const std::string& label, int bar, bool form)
 {
-    uint64_t h = 1469598103934665603ull;
-    for (char c : label)
-        h = (h ^ (uint64_t) (unsigned char) c) * 1099511628211ull;
-    const uint64_t salt = form ? h : (uint64_t) bar * 40503ull;
+    const uint64_t salt = form ? hashLabel (label.c_str()) : (uint64_t) bar * 40503ull + 977ull;
     return Rng ((uint64_t) g.seed * 2246822519ull + (uint64_t) l * 3266489917ull + (uint64_t) g.variation * 668265263ull + salt);
 }
 
@@ -73,22 +61,19 @@ void clip (Phrase& p)
 }
 
 // ------------------------------------------------------------------ bass
-Phrase bassLine (const GenParams& g, const LayerParams& lp)
+Phrase bassLine (const GenParams& g, const HarmonyTrack& harmony, const LayerParams& lp)
 {
     Phrase out;
     out.lengthBeats = barsOf (g) * 4.0;
-    Rng layerWide = layerRng (g, Layer::bass);
     const int tonic = g.key + 12 * (2 + std::clamp (lp.octave, -1, 2)); // A1 for A
     const float d = lp.density;
     const auto sections = formSections (g.form, barsOf (g));
+    auto root = [&] (double t) { return harmony.bass (t, tonic); }; // the bass of the chord under that beat
 
     for (int bar = 0; bar < barsOf (g); ++bar)
     {
         const double b0 = bar * 4.0;
-        const int r = rootDegree (g, bar);
-        const int root = pitchOf (g, tonic, r);
-        Rng barRng = sectionRng (g, Layer::bass, sections.empty() ? std::string() : sections[(size_t) bar].label, bar, ! sections.empty());
-        Rng& rng = sections.empty() ? layerWide : barRng;
+        Rng rng = sectionRng (g, Layer::bass, sections.empty() ? std::string() : sections[(size_t) bar].label, bar, ! sections.empty());
         const size_t firstOfBar = out.notes.size();
 
         switch ((BassPattern) lp.pattern)
@@ -97,15 +82,15 @@ Phrase bassLine (const GenParams& g, const LayerParams& lp)
                 for (int beat = 0; beat < 4; ++beat)
                     for (int sub = 1; sub <= 3; ++sub)
                         if (sub == 1 || rng.chance (0.35f + 0.65f * d))
-                            out.notes.push_back (makeNote (b0 + beat + sub * 0.25, 0.2, root, sub == 1 ? 0.86f : 0.72f));
+                            out.notes.push_back (makeNote (b0 + beat + sub * 0.25, 0.2, root (b0 + beat), sub == 1 ? 0.86f : 0.72f));
                 break;
 
             case BassPattern::offbeat:
                 for (int beat = 0; beat < 4; ++beat)
                 {
-                    out.notes.push_back (makeNote (b0 + beat + 0.5, 0.36, root, 0.86f));
+                    out.notes.push_back (makeNote (b0 + beat + 0.5, 0.36, root (b0 + beat), 0.86f));
                     if (d > 0.6f && rng.chance (d - 0.4f))
-                        out.notes.push_back (makeNote (b0 + beat + 0.75, 0.18, root, 0.7f));
+                        out.notes.push_back (makeNote (b0 + beat + 0.75, 0.18, root (b0 + beat), 0.7f));
                 }
                 break;
 
@@ -113,7 +98,8 @@ Phrase bassLine (const GenParams& g, const LayerParams& lp)
                 for (int e = 0; e < 8; ++e)
                 {
                     const bool up = e % 2 == 1 && rng.chance (0.4f + 0.6f * d);
-                    out.notes.push_back (makeNote (b0 + e * 0.5, 0.4, up ? root + 12 : root, e % 2 == 0 ? 0.86f : 0.74f));
+                    const int r = root (b0 + e * 0.5);
+                    out.notes.push_back (makeNote (b0 + e * 0.5, 0.4, up ? r + 12 : r, e % 2 == 0 ? 0.86f : 0.74f));
                 }
                 break;
 
@@ -123,7 +109,7 @@ Phrase bassLine (const GenParams& g, const LayerParams& lp)
                 static const int shape[] = { 7, 4, 2, 0 };
                 for (int s = 0; s < 16; ++s)
                     if (s % 4 == 0 || rng.chance (0.3f + 0.7f * d))
-                        out.notes.push_back (makeNote (b0 + s * 0.25, 0.2, pitchOf (g, tonic, r + shape[s % 4]), s % 4 == 0 ? 0.86f : 0.72f));
+                        out.notes.push_back (makeNote (b0 + s * 0.25, 0.2, harmony.pitch (b0 + s * 0.25, tonic, shape[s % 4]), s % 4 == 0 ? 0.86f : 0.72f));
                 break;
             }
         }
@@ -139,25 +125,27 @@ Phrase bassLine (const GenParams& g, const LayerParams& lp)
                 lastBeat();
                 static const int walk[] = { 0, 2, 4, 7 };
                 for (int k = 0; k < 4; ++k)
-                    out.notes.push_back (makeNote (b0 + 3.0 + k * 0.25, 0.2, pitchOf (g, tonic, r + walk[k]), 0.8f));
+                    out.notes.push_back (makeNote (b0 + 3.0 + k * 0.25, 0.2, harmony.pitch (b0 + 3.0, tonic, walk[k]), 0.8f));
             }
             else if (kind == SectionKind::answer || kind == SectionKind::closedAnswer)
             {
                 // The answer lifts: the last 8th jumps an octave.
                 out.notes.erase (std::remove_if (out.notes.begin() + (long) firstOfBar, out.notes.end(),
                                                  [b0] (const Note& n) { return n.start >= b0 + 3.5; }), out.notes.end());
-                out.notes.push_back (makeNote (b0 + 3.5, 0.36, root + 12, 0.84f));
+                out.notes.push_back (makeNote (b0 + 3.5, 0.36, root (b0 + 3.5) + 12, 0.84f));
             }
         }
     }
 
-    // Slide from the last note of a bar into the next bar.
+    // Slide from the last note of a bar into the next bar (decided per bar line).
     out.sortByStart();
     auto& n = out.notes;
     for (size_t i = 0; i + 1 < n.size(); ++i)
     {
-        const bool lastOfBar = (int) (n[i].start / 4.0) != (int) (n[i + 1].start / 4.0);
-        if (lastOfBar && n[i].pitch != n[i + 1].pitch && layerWide.chance (g.slide))
+        const int barLine = (int) (n[i + 1].start / 4.0);
+        const bool lastOfBar = (int) (n[i].start / 4.0) != barLine;
+        if (lastOfBar && n[i].pitch != n[i + 1].pitch
+            && keyedRng ({ (uint64_t) g.seed, (uint64_t) Layer::bass, (uint64_t) g.variation, (uint64_t) barLine, 5ull }).chance (g.slide))
         {
             n[i].length = n[i + 1].start - n[i].start;
             n[i + 1].glideFrom = n[i].pitch;
@@ -168,7 +156,7 @@ Phrase bassLine (const GenParams& g, const LayerParams& lp)
 }
 
 // ------------------------------------------------------------------ arp
-Phrase arpLine (const GenParams& g, const LayerParams& lp)
+Phrase arpLine (const GenParams& g, const HarmonyTrack& harmony, const LayerParams& lp)
 {
     Phrase out;
     out.lengthBeats = barsOf (g) * 4.0;
@@ -178,15 +166,20 @@ Phrase arpLine (const GenParams& g, const LayerParams& lp)
 
     const auto sections = formSections (g.form, barsOf (g));
     int index = 0, previous = -1;
-    for (int bar = 0; bar < barsOf (g); ++bar)
+    // Chord tones over two octaves, ascending, plus the top root: of the chord sounding at `t`.
+    auto tonesAt = [&] (double t)
     {
-        const int r = rootDegree (g, bar);
-        std::vector<int> tones; // chord tones over two octaves, ascending, plus the top root
+        std::vector<int> tones;
         for (int o = 0; o < 2; ++o)
             for (int deg : { 0, 2, 4 })
-                tones.push_back (pitchOf (g, tonic, r + deg + 7 * o));
-        tones.push_back (pitchOf (g, tonic, r + 14));
-        const int n = (int) tones.size();
+                tones.push_back (harmony.pitch (t, tonic, deg + 7 * o));
+        tones.push_back (harmony.pitch (t, tonic, 14));
+        return tones;
+    };
+    const int n = 7;
+
+    for (int bar = 0; bar < barsOf (g); ++bar)
+    {
 
         // With a form every bar restarts: A bars repeat exactly, answers turn round, the close descends home.
         const Section* sec = sections.empty() ? nullptr : &sections[(size_t) bar];
@@ -254,8 +247,9 @@ Phrase arpLine (const GenParams& g, const LayerParams& lp)
         {
             const int s = hits[i].first;
             const bool last = i + 1 == hits.size();
-            out.notes.push_back (makeNote (bar * 4.0 + s * 0.25, holdLast && last ? 4.0 - s * 0.25 - 0.02 : 0.14,
-                                           tones[(size_t) hits[i].second], s % 4 == 0 ? 0.84f : 0.7f));
+            const double t = bar * 4.0 + s * 0.25;
+            out.notes.push_back (makeNote (t, holdLast && last ? 4.0 - s * 0.25 - 0.02 : 0.14,
+                                           tonesAt (t)[(size_t) hits[i].second], s % 4 == 0 ? 0.84f : 0.7f));
         }
     }
     clip (out);
@@ -263,7 +257,7 @@ Phrase arpLine (const GenParams& g, const LayerParams& lp)
 }
 
 // ------------------------------------------------------------------ siren
-Phrase sirenLine (const GenParams& g, const LayerParams& lp)
+Phrase sirenLine (const GenParams& g, const HarmonyTrack& harmony, const LayerParams& lp)
 {
     Phrase out;
     out.lengthBeats = barsOf (g) * 4.0;
@@ -274,10 +268,14 @@ Phrase sirenLine (const GenParams& g, const LayerParams& lp)
 
     for (double t0 = 0.0; t0 < out.lengthBeats - 1.0e-9; t0 += span)
     {
-        const int bar = (int) (t0 / 4.0);
-        Note n = makeNote (t0, std::min (span, out.lengthBeats - t0) - 0.02, pitchOf (g, tonic, rootDegree (g, bar)), 0.85f);
+        const int root = harmony.pitch (t0, tonic, 0);
+        Note n = makeNote (t0, std::min (span, out.lengthBeats - t0) - 0.02, root, 0.85f);
         n.lockedExpr = true;
         const double len = n.length;
+        // The bends land on notes of the scale over the chord: a third (alarm), a fourth (wail), a third below (fall).
+        const float third = (float) (harmony.pitch (t0, tonic, 2) - root);
+        const float fourth = (float) (harmony.pitch (t0, tonic, 3) - root);
+        const float below = (float) (harmony.pitch (t0, tonic, -2) - root);
 
         for (int i = 0;; ++i)
         {
@@ -287,15 +285,15 @@ Phrase sirenLine (const GenParams& g, const LayerParams& lp)
             switch (pattern)
             {
                 case SirenPattern::rise:  v = 12.0f * std::pow (smooth (x / 0.95f), 1.6f); break;
-                case SirenPattern::wail:  v = 2.5f - 2.5f * (float) std::cos (6.283185307 * rate * t); break;
-                case SirenPattern::fall:  v = 12.0f * (1.0f - smooth ((float) (t / 0.45))) - 3.0f * smooth ((float) ((t - (len - 0.4)) / 0.4)); break;
+                case SirenPattern::wail:  v = 0.5f * fourth * (1.0f - (float) std::cos (6.283185307 * rate * t)); break;
+                case SirenPattern::fall:  v = 12.0f * (1.0f - smooth ((float) (t / 0.45))) + below * smooth ((float) ((t - (len - 0.4)) / 0.4)); break;
                 case SirenPattern::alarm:
                 case SirenPattern::count:
                 {
-                    // Minor third up and down in 8ths, with a short slew so it is a bend, not a jump.
+                    // A third up and down in 8ths, with a short slew so it is a bend, not a jump.
                     const double phase = std::fmod (t, 1.0);
                     const float up = smooth ((float) ((phase - 0.5) / 0.03)) * (1.0f - smooth ((float) ((phase - 0.97) / 0.03)));
-                    v = 3.0f * up;
+                    v = third * up;
                     break;
                 }
             }
@@ -313,7 +311,7 @@ Phrase sirenLine (const GenParams& g, const LayerParams& lp)
             {
                 const double phase = std::fmod (t, 1.0);
                 const float up = smooth ((float) ((phase - 0.5) / 0.03)) * (1.0f - smooth ((float) ((phase - 0.97) / 0.03)));
-                dense.push_back ({ t, 3.0f * up });
+                dense.push_back ({ t, third * up });
             }
             dense.push_back ({ len, n.bend.back().v });
             n.bend = std::move (dense);
@@ -324,7 +322,7 @@ Phrase sirenLine (const GenParams& g, const LayerParams& lp)
 }
 
 // ------------------------------------------------------------------ stab
-Phrase stabLine (const GenParams& g, const LayerParams& lp, const Phrase& lead)
+Phrase stabLine (const GenParams& g, const HarmonyTrack& harmony, const LayerParams& lp, const Phrase& lead)
 {
     Phrase out;
     out.lengthBeats = barsOf (g) * 4.0;
@@ -379,13 +377,14 @@ Phrase stabLine (const GenParams& g, const LayerParams& lp, const Phrase& lead)
         const double t = times[i];
         if (t >= out.lengthBeats - 0.05)
             continue;
-        const int bar = (int) (t / 4.0);
-        const int r = rootDegree (g, bar);
+        const auto& span = harmony.at (t);
         Chord c;
-        for (int deg : { 0, 2, 4 })
-            c.pitches.push_back (pitchOf (g, g.key + 48, r + deg));
-        const auto slots = voiceChordSlots (c, vp, prev.empty() ? nullptr : &prev);
+        c.pitches = span.chord.pitches;
+        auto slots = voiceChordSlots (c, vp, prev.empty() ? nullptr : &prev);
         prev = slots;
+        // A power chord's fifth is the scale's fifth over that chord (diminished on ii in minor, on i in Locrian).
+        for (auto& slot : slots)
+            slot = scales::snap (slot, span.scaleTonic, span.scale);
 
         const double next = i + 1 < times.size() ? times[i + 1] : out.lengthBeats;
         const double len = std::max (0.05, std::min (baseLen, next - t - 0.01));
@@ -416,24 +415,14 @@ Phrase stabLine (const GenParams& g, const LayerParams& lp, const Phrase& lead)
 
 std::vector<Region> kitChords (const GenParams& gen)
 {
-    std::vector<Region> regions;
-    for (int bar = 0; bar < barsOf (gen); ++bar)
-    {
-        Region r;
-        r.start = bar * 4.0;
-        r.length = 4.0;
-        const int deg = rootDegree (gen, bar);
-        for (int step : { 0, 2, 4 })
-            r.pitches.push_back (pitchOf (gen, gen.key + 48, deg + step));
-        regions.push_back (r);
-    }
-    return regions;
+    return leadHarmony (gen).chords();
 }
 
 std::vector<KitPart> generateKit (const KitParams& p)
 {
     std::vector<KitPart> out;
-    const Phrase lead = generateMelody (p.gen); // also gives the Stab its accents
+    const auto harmony = leadHarmony (p.gen);
+    const Phrase lead = generateLead (p.gen, p.expr); // also gives the Stab its accents
     const double length = barsOf (p.gen) * 4.0;
 
     for (int l = 0; l < numLayers; ++l)
@@ -446,12 +435,20 @@ std::vector<KitPart> generateKit (const KitParams& p)
         switch ((Layer) l)
         {
             case Layer::lead:  part.phrase = lead; break;
-            case Layer::bass:  part.phrase = bassLine (p.gen, lp); break;
-            case Layer::arp:   part.phrase = arpLine (p.gen, lp); break;
-            case Layer::siren: part.phrase = sirenLine (p.gen, lp); break;
-            case Layer::stab:  part.phrase = stabLine (p.gen, lp, lead); break;
+            case Layer::bass:  part.phrase = bassLine (p.gen, harmony, lp); break;
+            case Layer::arp:   part.phrase = arpLine (p.gen, harmony, lp); break;
+            case Layer::siren: part.phrase = sirenLine (p.gen, harmony, lp); break;
+            case Layer::stab:  part.phrase = stabLine (p.gen, harmony, lp, lead); break;
             case Layer::pad:
-            case Layer::count: part.phrase = cinematicRegions (kitChords (p.gen), length, p.pad, p.gen.key); break;
+            case Layer::count:
+            {
+                auto pad = p.pad;
+                pad.key = p.gen.key;
+                pad.scale = p.gen.scale;
+                pad.scaleLock = p.gen.scaleLock;
+                part.phrase = cinematicRegions (harmony.chords(), length, pad, p.gen.key);
+                break;
+            }
         }
         part.phrase.lengthBeats = length;
         part.phrase.sortByStart();

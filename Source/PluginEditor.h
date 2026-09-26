@@ -121,6 +121,7 @@ private:
     juce::TextButton presetBtn;
     Choice formChoice; // phrase form, for every mode
     Toggle previewToggle;
+    Toggle scaleLockToggle; // GENERATE and KIT: every note in the scale
     DragOut dragOut { *this };
     juce::Label status;
 
@@ -128,6 +129,8 @@ private:
     MpeMonitor monitor;
 
     ControlList genControls, voiceControls, cineControls, exprControls, outControls, kitControls;
+    std::vector<juce::Component*> riffOnly, voiceOnly; // GENERATE controls of one lead engine
+    Knob* pedalKnob = nullptr;                          // "Pedal" for Riff, "Recite" for Voice
     std::vector<std::unique_ptr<LayerRow>> layerRows;
     juce::Rectangle<int> modeArea, exprArea, outArea, kitHeader;
 
@@ -135,6 +138,7 @@ private:
     bool dropHover = false;
     bool initialised = false;
     DarkMPEProcessor::Mode shownMode { DarkMPEProcessor::Mode::generate };
+    bool shownVoice = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DarkMPEEditor)
 };

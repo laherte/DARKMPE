@@ -2,6 +2,7 @@
 
 #include "model/Phrase.h"
 #include "engine/CinematicEngine.h"
+#include "engine/ExpressionShaper.h"
 #include "engine/MelodyGenerator.h"
 
 #include <array>
@@ -10,8 +11,8 @@
 namespace dmpe
 {
 
-// A KIT is a whole track idea: several parts built on the same key, scale, chord progression (the lead style's)
-// and seed, so they lock together.
+// A KIT is a whole track idea: several parts built on the same key, scale, chords (the lead's harmony: the style's
+// progression, the CINEMATIC progression or the tonic) and seed, so they lock together.
 enum class Layer { lead, bass, arp, siren, stab, pad, count };
 inline const char* const layerNames[] = { "Lead", "Bass", "Arp", "Siren", "Stab", "Pad" };
 constexpr int numLayers = (int) Layer::count;
@@ -38,9 +39,10 @@ struct LayerParams
 
 struct KitParams
 {
-    GenParams gen; // key, scale, style (its progression), bars, seed, variation, slide, and the lead itself
+    GenParams gen; // key, scale, harmony (style / progression / tonic), bars, seed, variation, slide, scale lock, the lead
     std::array<LayerParams, (size_t) numLayers> layers;
-    CineParams pad; // the Pad layer is the cinematic engine over the kit's chords
+    CineParams pad;  // the Pad layer is the cinematic engine over the kit's chords
+    ExprParams expr; // the Voice lead shapes its own expression
 };
 
 struct KitPart
@@ -52,7 +54,7 @@ struct KitPart
 // The enabled layers, in Layer order, all with the same length. Deterministic for a given KitParams.
 std::vector<KitPart> generateKit (const KitParams& p);
 
-// The kit's chords (one region per bar), e.g. for chord symbols.
+// The kit's chords (the lead's harmony), e.g. for chord symbols.
 std::vector<Region> kitChords (const GenParams& gen);
 
 } // namespace dmpe

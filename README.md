@@ -10,13 +10,15 @@ ctest --test-dir build        # test del motore e del processor (MPE valido, zer
 ```
 Per copiare i plugin in `~/Library/Audio/Plug-Ins` dopo la build aggiungi `-DDARKMPE_INSTALL=ON` alla configurazione, oppure copia a mano da `build/DarkMPE_artefacts/Release/{VST3,AU}`.
 
-Demo pronte all'uso: ogni stile di lead (MPE e Mono), le Phrase Form (lead e armonia), 10 vetrine CINEMATIC, un KIT completo (un file per layer), e ogni voicing e versione cinematica dei `.mid` in `Examples/`:
+Demo pronte all'uso: ogni stile di lead (MPE e Mono), i quattro stili Voice (MPE e Mono), le Phrase Form (lead e armonia), 10 vetrine CINEMATIC, un KIT completo (un file per layer), e ogni voicing e versione cinematica dei `.mid` in `Examples/`:
 ```bash
 ./build/DarkMPETests_artefacts/Release/DarkMPETests --render Examples "Examples/MPE Output"
 ```
 
 ## Le modalità
-Ogni modifica rigenera con lo stesso seed.
+Ogni modifica rigenera con lo stesso seed, e cambia solo quello che deve cambiare: ogni scelta casuale è legata al suo posto (battuta o sezione, posizione nella battuta), non all'ordine in cui viene fatta.
+- **Bars**: passando da 4 a 8 battute le prime 4 restano identiche (anche con le Phrase Form e il Voice).
+- **Density**: più densità aggiunge note, quelle che c'erano restano dove sono e con la stessa altezza (tranne nello stile Dark Arp, dove l'arpeggio si ridistribuisce).
 - **NEW** crea un nuovo seed.
 - **MUTATE** varia solo le battute di risposta.
 - **◀ ▶** tornano ai seed precedenti (ultimi 32, salvati nel progetto).
@@ -50,7 +52,22 @@ Dove si applica:
 Le lettere delle sezioni compaiono sul piano roll.
 
 ### GENERATE (lead)
-Scegli Style, Key, Scale e Bars.
+Scegli **Engine**, Style (o Voice), Key, Scale, Bars, **Harmony** e **Rate**.
+- **Engine**:
+  - *Riff*: i generatori a stile qui sotto (riff ritmici);
+  - *Voice*: un synth che quasi parla, vedi più avanti.
+- **Harmony**: su quali accordi è costruito il lead (e tutto il KIT). Gli accordi che stanno suonando si leggono nella barra di stato e in basso nel piano roll.
+  - *Style*: la progressione dello stile, un accordo per battuta (Pursuit: i i VI VII);
+  - *Progression*: la **Progression** di CINEMATIC con la sua **Chord Length** (anche accordi da 2 beat) e **Darkness** per *Auto*. Sugli accordi presi in prestito il lead usa una scala che li contiene (su E7 in La minore: La minore armonica);
+  - *Tonic*: nessun cambio, tutto sulla tonica (utile con Key Trigger o sopra i tuoi accordi).
+- **Pedal** torna sempre alla **fondamentale dell'accordo** che suona in quel momento, non alla tonica: è la nota che "segue il basso" della progressione.
+- **Rate**: la griglia del lead, 1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32. Gli 8vi di 1/8 sono gli 8vi di 1/16, quindi la linea non cambia sui tempi forti.
+- **Long Notes**: alcune note sui tempi forti tengono per un 8vo, un 8vo puntato, una semiminima o una minima, e si mangiano gli step che coprono: basta 1/16 continui.
+- **IN SCALE** (barra in alto, GENERATE e KIT, attivo di default): ogni nota nella Key e nella Scale.
+  - *Chroma* diventa un'appoggiatura diatonica (il grado sopra o sotto la nota successiva) invece di un semitono;
+  - gli accordi presi in prestito della Progression diventano quelli della scala (Fm → F, E7 → Em7);
+  - nel KIT: quinte dello Stab, bend della Siren, colori, reharm e voicing del Pad restano in scala.
+  - Spento: approcci cromatici (sempre su note deboli, mai sul battere o sul pedale) e accordi presi in prestito.
 - **Stili**:
   - Pursuit, Hate or Glory, Opr, Dark Arp, Acid Slide;
   - *Gallop*: croma + due semicrome, molto sulla radice;
@@ -59,6 +76,30 @@ Scegli Style, Key, Scale e Bars.
   - Natural Minor, Phrygian, Harmonic Minor, Phrygian Dominant, Dorian, Locrian, Hungarian Minor;
   - Double Harmonic, Neapolitan Minor, Aeolian b5, Minor Pentatonic.
 - **Humanize**: micro-variazioni di timing (±1/64 di beat) e velocity, sempre uguali per lo stesso seed. Le legature dei glide restano intatte.
+
+#### Voice: il lead che quasi parla
+Ogni battuta è una frase di sillabe raggruppate in parole: le sillabe accentate sono più lunghe e più alte, la frase finisce cadendo (affermazione), salendo (domanda) o con un picco (esclamazione). Con le Phrase Form: A afferma, B domanda, C chiude cadendo sulla fondamentale, F esclama.
+
+Ogni sillaba è una nota MPE con la sua espressione:
+- **CC74 (Slide) = la vocale**: attacco consonantico (labbra chiuse "m/b", colpo "d/t", "y", "r/l"), la vocale (U O E A I), a volte un dittongo ("ai", "au", "ou"), la bocca che si chiude a fine parola.
+- **Pressure = il volume della voce**: attacco, picco sulle sillabe accentate, cali tra le parole, coda epica sull'ultima nota.
+- **Bend = l'intonazione del parlato**: scoop all'inizio della sillaba, portamento tra sillabe legate, growl sulle consonanti, vibrato sulle vocali lunghe, cadute e salite a fine frase.
+
+Sul synth: CC74 su un filtro a formanti / vowel filter (o wavetable position), Pressure su volume o drive. Esempio con Serum 2: CC74 → formant del filtro, Pressure → level e drive.
+
+| Voice | Carattere |
+|---|---|
+| Prophet | declamato su una nota di recita, la frase cade (o sale se è una domanda) |
+| Lament | sospiri: la sillaba accentata scende di un grado, la linea affonda parola dopo parola |
+| Titan | poche sillabe, un salto di quinta o d'ottava, vocali lunghe con cadute enormi: epico |
+| Talkbox | riff sillabico, "wah / yeah" su ogni nota |
+
+Manopole:
+- **Vowels**: quanto si muove la vocale; **Inflection**: scoop, cadute e salite; **Growl**: il ruvido sulle consonanti.
+- **Recite** (al posto di Pedal): quanto la frase resta sulla nota di recita.
+- Density (sillabe per battuta), Long Notes (sillabe accentate più lunghe), Octave (salti), Slide (portamento), Gate (stacco tra le parole), Rate (la griglia delle sillabe: con 1/16T il parlato diventa terzinato).
+- Glide Time, Vibrato, Timbre (il centro delle vocali), Pressure e Breath di MPE EXPRESSION valgono anche per Voice.
+- Le note restano sempre nella scala dell'accordo: le inflessioni sono bend.
 
 ### TRANSFORM (voicing)
 Trascina un `.mid` sulla finestra del plugin, oppure usa **LOAD MIDI** o **CAPTURE** (armi, suoni sulla traccia A, premi di nuovo). Anche un `.mid` MPE polifonico va bene: con *Keep Expr* l'espressione di chi suona viene conservata.
@@ -123,15 +164,18 @@ Il resto:
 - **Voices**: fino a 8 voci.
 
 ### KIT (una traccia intera)
-Sei layer costruiti su Key, Scale, progressione (quella dello Style) e seed comuni, quindi suonano insieme. Ogni layer ha **ON**, **Pattern**, **Density**, **Octave** e, se suona una linea sola, **MONO**.
+Sei layer costruiti su Key, Scale, accordi (la **Harmony** del lead: Style, Progression o Tonic) e seed comuni, quindi suonano insieme. Ogni layer ha **ON**, **Pattern**, **Density**, **Octave** e, se suona una linea sola, **MONO**.
+- Il **Bass** suona il basso dell'accordo, anche quando non è la fondamentale: in *Lament Bass* scende (Am, Em/G, Dm/F, E), in *Tonic Pedal* resta sulla tonica.
+- Il **Pad** suona gli accordi del kit con il suono di CINEMATIC (Motion, Voicing, Tension, Reharm...).
+- Il **Lead** è quello di GENERATE, anche con l'engine Voice (le sue sillabe accentate danno gli accenti allo Stab).
 
 | Layer | Pattern |
 |---|---|
 | Lead | il lead di GENERATE |
 | Bass | Rolling (le tre semicrome dopo il beat), Offbeat, Pedal + Oct, Arp Down (arpeggio sul basso); scivola nella battuta successiva |
 | Arp | Up, Down, Up Down, Random sulle note dell'accordo, su due ottave |
-| Siren | Rise (sale di un'ottava), Wail, Fall (tuffo da +12), Alarm (terza minore in crome): bend MPE per nota |
-| Stab | accordi di potenza sugli accenti del lead, in levare, sincopati o sul battere, con una caduta di pitch |
+| Siren | Rise (sale di un'ottava), Wail (fino alla quarta della scala), Fall (tuffo da +12 che finisce una terza sotto), Alarm (la terza della scala in crome): bend MPE per nota |
+| Stab | accordi di potenza sugli accenti del lead, in levare, sincopati o sul battere, con una caduta di pitch; la quinta è quella della scala (diminuita sul ii in minore) |
 | Pad | il motore CINEMATIC sugli accordi del kit (usa le impostazioni di CINEMATIC) |
 
 - Il **layer a fuoco** (clicca sul nome) è disegnato sopra gli altri nel piano roll, va all'uscita MIDI dell'host e si vede nel monitor.
@@ -149,7 +193,7 @@ Sei layer costruiti su Key, Scale, progressione (quella dello Style) e seed comu
   - *Gate*: il loop suona solo finché tieni premuto un tasto e riparte dall'inizio nel momento esatto in cui lo premi, anche a transport fermo.
 
 ## Preset
-**PRESET ▾** contiene 30 preset di fabbrica (Lead, Cinematic, Kit, Transform; alcuni usano le Phrase Form, come *ABAC Anthem*, *Rising Sequence*, *ABAC Track*), che sono anche i Program dell'host.
+**PRESET ▾** contiene 37 preset di fabbrica (Lead, Cinematic, Kit, Transform; alcuni usano le Phrase Form, come *ABAC Anthem*, *Rising Sequence*, *ABAC Track*; il motore Voice in *Voice Prophet*, *Voice Titan*, *Voice Lament*, *Talkbox*, *Kit - Voice over Lament*), che sono anche i Program dell'host.
 - I preset utente si salvano con *Save preset…* in `~/Music/DarkMPE/Presets` (file `.dmpreset`, parametri + seed).
 - Un preset non tocca mai le impostazioni di uscita: porte, bend range, Key Trigger e Mono Lead.
 
@@ -191,7 +235,9 @@ Per controllare l'interfaccia senza aprire una DAW (su Linux: `xvfb-run -s "-scr
 - `Source/engine/HarmonyEngine`: progressioni (anche divise per forma), colori (Tension/Darkness), nomi degli accordi.
 - `Source/engine/CinematicEngine`: regioni di accordi, reharm, voicing a slot, movimenti (Morph, Bloom, Collapse, Breathe, Deep Note, Pulse, Tension Rise), sospensioni, fall, arc.
 - `Source/engine/KitGenerator`: i sei layer del KIT.
-- `Source/engine/MelodyGenerator`: ritmo euclideo o fisso, motivo, pedale, ottave, cromatismi e slide.
+- `Source/engine/LeadHarmony`: gli accordi sotto il lead e il KIT (Style, Progression, Tonic), la scala usata su ogni accordo, Scale Lock.
+- `Source/engine/MelodyGenerator`: il motore Riff: griglia (Rate), ritmo a priorità metrica o fisso, note lunghe, motivo, pedale, ottave, approcci e slide; scelte casuali legate alla posizione.
+- `Source/engine/VoiceGenerator`: il motore Voice: frasi, parole e sillabe, vocali (CC74), volume (Pressure) e intonazione (bend).
 - `Source/engine/VoicingEngine`: rilevamento degli accordi, revoicing, voice leading a movimento minimo, strum.
 - `Source/engine/ExpressionShaper`: glide, detune, vibrato, curve di timbro e pressure (punti fitti dove il pitch si muove veloce).
 - `Source/engine/Humanize`: timing e velocity.
@@ -204,3 +250,18 @@ Per controllare l'interfaccia senza aprire una DAW (su Linux: `xvfb-run -s "-scr
 - `Source/presets/Presets`: preset di fabbrica e utente.
 - `Source/PluginProcessor`: parametri, rebuild, riproduzione a loop in tempo reale (senza allocazioni), Key Trigger, cronologia dei seed.
 - `Source/PluginEditor`, `Source/ui`: interfaccia scalabile, piano roll con immagine in cache, monitor MPE.
+
+## V2: cosa cambia rispetto alla 1.0
+- A parità di seed, i lead Riff suonano diversi dalla 1.0: il ritmo ora nasce da priorità metriche fisse (per rendere stabili Bars e Density) invece che da un pattern euclideo ruotato. Il carattere degli stili resta.
+- IN SCALE è attivo di default: Chroma diventa diatonico, e nel KIT Stab, Siren e Pad restano in scala. Spegnilo per il suono cromatico della 1.0.
+- Corretti:
+  - cambiare Bars rigenerava tutto il lead (i numeri casuali venivano consumati in sequenza su tutta la frase);
+  - cambiare Density spostava tutte le note;
+  - le note di approccio cromatiche potevano cadere sul battere o sul pedale;
+  - le ottave "sui levare" (Hate or Glory, Rave Stab) cadevano su una nota sì e una no, non sui levare;
+  - la quinta dello Stab era sempre giusta anche dove la scala l'ha diminuita (ii in minore, Locrian, Aeolian b5);
+  - Siren Alarm e Wail usavano intervalli fissi (terza minore, quarta giusta) anche su accordi dove escono di scala;
+  - il Pad del KIT aggiungeva colori (b9, #11, b13), reharm cromatici e la b9 del voicing Gothic fuori scala;
+  - il Bass del KIT ignorava il basso degli accordi (slash chord);
+  - il lead seguiva una progressione nascosta (quella dello stile) senza mostrarla, e ignorava la Progression scelta;
+  - con una Phrase Form, a 8 battute gli accordi della Progression si raggruppavano a due a due e non combaciavano con le sezioni del lead (una per battuta).
