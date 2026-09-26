@@ -7,7 +7,7 @@
 #include <memory>
 #include <vector>
 
-// Virtual MIDI output ports ("DarkMPE Out", one per layer in KIT mode).
+// Virtual MIDI output ports ("DarkMPE MK2 Out", one per layer in KIT mode).
 // The audio thread only pushes into a lock-free FIFO; a sender thread delivers each message on time.
 // (juce::MidiOutput::sendBlockOfMessages allocates and locks for every event, which the audio thread must not do.)
 class PortHub : private juce::Thread

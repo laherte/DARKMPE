@@ -1,6 +1,24 @@
-# DarkMPE
+# DarkMPE MK2 (sperimentale)
 
 Generatore MPE in stile Gesaffelstein: lead, armonie cinematiche, tracce complete a layer e trasformazione di MIDI in voicing MPE. Formati VST3, AU e Standalone, pensato per Ableton Live 12.
+
+**MK2** è la versione sperimentale: tutto quello di DarkMPE, più il motore V2 (Harmony, Rate, Long Notes, IN SCALE, il lead Voice) e **MIDI LEARN** (il plugin ascolta la clip sulla sua traccia e capisce accordi, basso, lead o ritmo).
+- È un plugin a parte, **DarkMPE MK2**: si installa accanto a DarkMPE senza sostituirlo, e in Live compaiono tutti e due.
+- Ha le sue porte MIDI (**DarkMPE MK2 Out**, **DarkMPE MK2 Bass**...) e la sua cartella di preset (`~/Music/DarkMPE MK2/Presets`), quindi non si mescola con la versione stabile.
+
+### Le due versioni su GitHub
+- Il branch **`main`** è DarkMPE stabile: questa MK2 non lo tocca.
+- Il branch **`claude/v2-lead-engine-logic-azf2gp`** è la MK2: una copia parallela del progetto con in più tutte le novità.
+- Quando la MK2 ti convince, la si porta su `main` con una Pull Request. Fino ad allora le due versioni restano separate.
+
+Per compilare la MK2 accanto alla versione stabile (in una cartella di build sua):
+```bash
+git fetch origin
+git checkout claude/v2-lead-engine-logic-azf2gp     # la MK2 (git checkout main per tornare alla stabile)
+cmake -B build-mk2 -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DDARKMPE_INSTALL=ON
+cmake --build build-mk2 -j8
+```
+In `~/Library/Audio/Plug-Ins` compare `DarkMPE MK2.vst3` (e `DarkMPE MK2.component`) accanto a `DarkMPE.vst3`.
 
 ## Build
 ```bash
@@ -8,7 +26,7 @@ cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHIT
 cmake --build build -j8
 ctest --test-dir build        # test del motore e del processor (MPE valido, zero allocazioni sull'audio thread)
 ```
-Per copiare i plugin in `~/Library/Audio/Plug-Ins` dopo la build aggiungi `-DDARKMPE_INSTALL=ON` alla configurazione, oppure copia a mano da `build/DarkMPE_artefacts/Release/{VST3,AU}`.
+Per copiare i plugin in `~/Library/Audio/Plug-Ins` dopo la build aggiungi `-DDARKMPE_INSTALL=ON` alla configurazione, oppure copia a mano da `build/DarkMPE_artefacts/Release/{VST3,AU}` (i file si chiamano `DarkMPE MK2`).
 
 Demo pronte all'uso: ogni stile di lead (MPE e Mono), i quattro stili Voice (MPE e Mono), le Phrase Form (lead e armonia), 10 vetrine CINEMATIC, un KIT completo (un file per layer), e ogni voicing e versione cinematica dei `.mid` in `Examples/`:
 ```bash
@@ -59,7 +77,9 @@ Scegli **Engine**, Style (o Voice), Key, Scale, Bars, **Harmony** e **Rate**.
 - **Harmony**: su quali accordi è costruito il lead (e tutto il KIT). Gli accordi che stanno suonando si leggono nella barra di stato e in basso nel piano roll.
   - *Style*: la progressione dello stile, un accordo per battuta (Pursuit: i i VI VII);
   - *Progression*: la **Progression** di CINEMATIC con la sua **Chord Length** (anche accordi da 2 beat) e **Darkness** per *Auto*. Sugli accordi presi in prestito il lead usa una scala che li contiene (su E7 in La minore: La minore armonica);
-  - *Tonic*: nessun cambio, tutto sulla tonica (utile con Key Trigger o sopra i tuoi accordi).
+  - *Tonic*: nessun cambio, tutto sulla tonica (utile con Key Trigger o sopra i tuoi accordi);
+  - *MIDI In*: gli accordi imparati con **LEARN** dalla tua clip (vedi MIDI LEARN).
+- **Motif**: da dove viene l'idea del lead. *Generated* (il motore), *Your Lead* o *Your Rhythm* (imparati con LEARN).
 - **Pedal** torna sempre alla **fondamentale dell'accordo** che suona in quel momento, non alla tonica: è la nota che "segue il basso" della progressione.
 - **Rate**: la griglia del lead, 1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32. Gli 8vi di 1/8 sono gli 8vi di 1/16, quindi la linea non cambia sui tempi forti.
 - **Long Notes**: alcune note sui tempi forti tengono per un 8vo, un 8vo puntato, una semiminima o una minima, e si mangiano gli step che coprono: basta 1/16 continui.
@@ -100,6 +120,28 @@ Manopole:
 - Density (sillabe per battuta), Long Notes (sillabe accentate più lunghe), Octave (salti), Slide (portamento), Gate (stacco tra le parole), Rate (la griglia delle sillabe: con 1/16T il parlato diventa terzinato).
 - Glide Time, Vibrato, Timbre (il centro delle vocali), Pressure e Breath di MPE EXPRESSION valgono anche per Voice.
 - Le note restano sempre nella scala dell'accordo: le inflessioni sono bend.
+
+### MIDI LEARN (solo MK2)
+Il plugin ascolta la clip che suona sulla sua traccia e capisce una cosa, quella che gli dici tu.
+
+1. Metti la clip sulla traccia di **DarkMPE MK2** (va bene un MIDI normale, non serve MPE). **Key Trigger** su *Off*.
+2. Premi **LEARN** (in GENERATE o KIT) e scegli cosa suona la clip:
+
+| Scelta | Cosa capisce | Cosa cambia |
+|---|---|---|
+| **Chords** | gli accordi: a blocchi, arpeggiati o con una melodia sopra; rivolti (Em/G), settime, sus, power chord; cambi sulla battuta, a metà, sul beat, anche anticipati di un ottavo | Harmony = **MIDI In**, Key e Scale |
+| **Bass line** | una fondamentale ogni mezza battuta (la nota che dura di più, quella sul battere conta doppio) e l'accordo della scala su ognuna | Harmony = **MIDI In**, Key e Scale |
+| **Lead** | la melodia (la nota più alta se ne suoni due insieme), la griglia (1/16, 1/16T o 1/32) | Motif = **Your Lead**, Rate, Key e Scale |
+| **Rhythm** | solo gli attacchi e la loro dinamica (va bene anche una clip di batteria) | Motif = **Your Rhythm**, Rate |
+
+3. Premi Play. LEARN parte dalla battuta della prima nota, ascolta **4 battute** (sulle battute di Live, anche se il loop di Live torna indietro nel frattempo) e applica il risultato; Bars va a 4. La barra di stato mostra *bar 1 of 4...* e poi cosa ha capito, per esempio `Chords: Am F C G - A Natural Minor -> Harmony: MIDI In`. Ripremi LEARN per annullare.
+
+Cosa succede dopo:
+- **Key e Scale**: il plugin sceglie, tra le sue scale, quella che contiene le note della clip e la tonica a cui puntano gli accordi. Se la clip non lo dice (per esempio una melodia pentatonica o dei power chord senza terza), resta la Key e la Scale che avevi.
+- **Harmony MIDI In**: il lead, il basso, l'arpeggio, lo stab, la siren e il pad seguono i tuoi accordi, ripetuti ogni 4 battute. I tuoi accordi restano come li hai suonati anche con IN SCALE, così le linee non litigano con la tua clip: su un tuo E7 in La minore il lead usa il Sol#. Il Pad suona i tuoi accordi (IN SCALE sistema solo i colori, se tutti i tuoi accordi sono nella scala).
+- **Your Lead**: le tue note tornano uguali (altezza, durata, dinamica) sopra i tuoi accordi, oppure sopra la tonica se non ne hai insegnati. Se la Harmony era *Style*, passa a *MIDI In*; con *Progression* la tua melodia segue quegli accordi grado per grado. **MUTATE** varia la seconda e la quarta battuta di un grado o due, la prima e la terza restano tue. Oct Base la sposta di ottava. Con una Phrase Form la tua prima battuta diventa la A. Con l'engine **Voice** la tua melodia viene "parlata": vocali, scoop, cadute e domande sulle tue note. Nel piano roll le tue note originali sono i contorni grigi.
+- **Your Rhythm**: il Riff (o il Voice) suona sui tuoi attacchi, battuta per battuta; Density non conta, le altezze le decide lo stile.
+- Quello che hai insegnato si salva nel progetto. **LEARN → Forget** lo cancella (e rimette Harmony su Style o Motif su Generated).
 
 ### TRANSFORM (voicing)
 Trascina un `.mid` sulla finestra del plugin, oppure usa **LOAD MIDI** o **CAPTURE** (armi, suoni sulla traccia A, premi di nuovo). Anche un `.mid` MPE polifonico va bene: con *Keep Expr* l'espressione di chi suona viene conservata.
@@ -194,31 +236,31 @@ Sei layer costruiti su Key, Scale, accordi (la **Harmony** del lead: Style, Prog
 
 ## Preset
 **PRESET ▾** contiene 37 preset di fabbrica (Lead, Cinematic, Kit, Transform; alcuni usano le Phrase Form, come *ABAC Anthem*, *Rising Sequence*, *ABAC Track*; il motore Voice in *Voice Prophet*, *Voice Titan*, *Voice Lament*, *Talkbox*, *Kit - Voice over Lament*), che sono anche i Program dell'host.
-- I preset utente si salvano con *Save preset…* in `~/Music/DarkMPE/Presets` (file `.dmpreset`, parametri + seed).
+- I preset utente si salvano con *Save preset…* in `~/Music/DarkMPE MK2/Presets` (file `.dmpreset`, parametri + seed). I preset di DarkMPE 1.x si possono copiare lì dentro.
 - Un preset non tocca mai le impostazioni di uscita: porte, bend range, Key Trigger e Mono Lead.
 
 La finestra si ridimensiona dall'angolo in basso a destra, oppure dal menu **100%** (60–160%). La dimensione viene salvata nel progetto.
 
-## MPE vero in Live 12: le porte "DarkMPE"
+## MPE vero in Live 12: le porte "DarkMPE MK2"
 **Ableton Live importa i `.mid` senza MPE**: fonde i canali in un'unica curva di Pitch Bend della clip. Lo stesso vale per l'export di Live, che non scrive l'MPE. Il `.mid` MPE di DRAG/EXPORT funziona invece in Bitwig, Logic, Cubase e Reaper.
 
 In Live l'MPE nativo entra solo da una porta di input con MPE Mode, mentre il routing "MIDI From: traccia" tra tracce appiattisce tutto in un pitch bend globale. Per questo il plugin pubblica delle porte MIDI virtuali.
 
-1. **Traccia A**: DarkMPE, con input *No Input* (oppure il tuo controller se usi Key Trigger).
-2. **Live → Settings → Link, Tempo & MIDI**: sulla riga di Input **DarkMPE Out** attiva **Track** e **MPE**.
+1. **Traccia A**: DarkMPE MK2, con input *No Input* (oppure il tuo controller se usi Key Trigger, o la clip da far imparare a LEARN).
+2. **Live → Settings → Link, Tempo & MIDI**: sulla riga di Input **DarkMPE MK2 Out** attiva **Track** e **MPE**.
 3. **Traccia B**: il synth (Serum 2, Drift, Wavetable, Meld…).
-   - MIDI From = **DarkMPE Out**, Monitor = **In**.
+   - MIDI From = **DarkMPE MK2 Out**, Monitor = **In**.
    - Per i plugin (Serum): tasto destro sul titolo del device → **Enable MPE Mode**; dentro Serum attiva l'MPE con bend range 48.
 4. Premi Play in Live (oppure PREVIEW nel plugin): il synth riceve l'MPE per nota. La striscia **MPE OUT** sotto il piano roll mostra, canale per canale, nota, bend, slide e pressure in uscita.
 5. **Clip MPE**: arma la traccia B e registra. La clip ha il pitch per nota nel tab *MPE* (Note Expression).
 
 ### Una istanza, più synth
-- **La stessa parte su più synth (layering)**: metti `MIDI From = DarkMPE Out` (Monitor In, MPE attivo sul synth) su più tracce. Ognuna riceve lo stesso flusso MPE; per registrare le armi tutte.
+- **La stessa parte su più synth (layering)**: metti `MIDI From = DarkMPE MK2 Out` (Monitor In, MPE attivo sul synth) su più tracce. Ognuna riceve lo stesso flusso MPE; per registrare le armi tutte.
 - **Parti diverse su synth diversi**: usa il **KIT**. Ogni layer ha la sua porta:
-  - **DarkMPE Out** (Lead), **DarkMPE Bass**, **DarkMPE Arp**, **DarkMPE Siren**, **DarkMPE Stab**, **DarkMPE Pad**;
+  - **DarkMPE MK2 Out** (Lead), **DarkMPE MK2 Bass**, **DarkMPE MK2 Arp**, **DarkMPE MK2 Siren**, **DarkMPE MK2 Stab**, **DarkMPE MK2 Pad**;
   - una porta appare la prima volta che il layer viene acceso in KIT e poi resta, così Live conserva il routing;
   - nelle impostazioni MIDI di Live attiva Track + MPE una volta per porta (per i layer MONO basta Track), poi punta ogni traccia-synth alla sua porta. Tutto resta a tempo e sulla stessa armonia, anche col Key Trigger.
-- Con più istanze le porte si chiamano "DarkMPE Out 2", "DarkMPE Bass 2" e così via.
+- Con più istanze le porte si chiamano "DarkMPE MK2 Out 2", "DarkMPE MK2 Bass 2" e così via. Le porte di DarkMPE 1.x ("DarkMPE Out"...) restano separate: i due plugin possono stare nello stesso set.
 
 Per capire come viene letto un file MIDI:
 ```bash
@@ -238,6 +280,7 @@ Per controllare l'interfaccia senza aprire una DAW (su Linux: `xvfb-run -s "-scr
 - `Source/engine/LeadHarmony`: gli accordi sotto il lead e il KIT (Style, Progression, Tonic), la scala usata su ogni accordo, Scale Lock.
 - `Source/engine/MelodyGenerator`: il motore Riff: griglia (Rate), ritmo a priorità metrica o fisso, note lunghe, motivo, pedale, ottave, approcci e slide; scelte casuali legate alla posizione.
 - `Source/engine/VoiceGenerator`: il motore Voice: frasi, parole e sillabe, vocali (CC74), volume (Pressure) e intonazione (bend).
+- `Source/engine/MidiLearn`: MIDI LEARN: accordi da una clip (template e programmazione dinamica), fondamentali del basso, tonalità e scala, griglia.
 - `Source/engine/VoicingEngine`: rilevamento degli accordi, revoicing, voice leading a movimento minimo, strum.
 - `Source/engine/ExpressionShaper`: glide, detune, vibrato, curve di timbro e pressure (punti fitti dove il pitch si muove veloce).
 - `Source/engine/Humanize`: timing e velocity.
@@ -251,7 +294,7 @@ Per controllare l'interfaccia senza aprire una DAW (su Linux: `xvfb-run -s "-scr
 - `Source/PluginProcessor`: parametri, rebuild, riproduzione a loop in tempo reale (senza allocazioni), Key Trigger, cronologia dei seed.
 - `Source/PluginEditor`, `Source/ui`: interfaccia scalabile, piano roll con immagine in cache, monitor MPE.
 
-## V2: cosa cambia rispetto alla 1.0
+## MK2: cosa cambia rispetto alla 1.0
 - A parità di seed, i lead Riff suonano diversi dalla 1.0: il ritmo ora nasce da priorità metriche fisse (per rendere stabili Bars e Density) invece che da un pattern euclideo ruotato. Il carattere degli stili resta.
 - IN SCALE è attivo di default: Chroma diventa diatonico, e nel KIT Stab, Siren e Pad restano in scala. Spegnilo per il suono cromatico della 1.0.
 - Corretti:
@@ -264,4 +307,5 @@ Per controllare l'interfaccia senza aprire una DAW (su Linux: `xvfb-run -s "-scr
   - il Pad del KIT aggiungeva colori (b9, #11, b13), reharm cromatici e la b9 del voicing Gothic fuori scala;
   - il Bass del KIT ignorava il basso degli accordi (slash chord);
   - il lead seguiva una progressione nascosta (quella dello stile) senza mostrarla, e ignorava la Progression scelta;
-  - con una Phrase Form, a 8 battute gli accordi della Progression si raggruppavano a due a due e non combaciavano con le sezioni del lead (una per battuta).
+  - con una Phrase Form, a 8 battute gli accordi della Progression si raggruppavano a due a due e non combaciavano con le sezioni del lead (una per battuta);
+  - CAPTURE con il loop di Live attivo: quando il loop tornava indietro, le note dopo il salto finivano tutte all'inizio della ripresa. Ora la ripresa segue il tempo che scorre.

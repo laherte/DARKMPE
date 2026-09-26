@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-PortHub::PortHub() : juce::Thread ("DarkMPE port sender") {}
+PortHub::PortHub() : juce::Thread ("DarkMPE MK2 port sender") {}
 
 PortHub::~PortHub()
 {

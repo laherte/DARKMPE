@@ -14,10 +14,11 @@ enum class HarmonySource
     style,       // the style's own progression, one chord per bar (i i VI VII for Pursuit...)
     progression, // the CINEMATIC Progression and Chord Length (also 2-beat chords, borrowed and chromatic ones)
     tonic,       // no changes: everything on the tonic chord (for Key Trigger, or over your own chords)
+    learned,     // MIDI In: the chords LEARN heard on the plugin's track (kept as played, repeated every 4 bars)
     count
 };
 
-inline const char* const harmonySourceNames[] = { "Style", "Progression", "Tonic" };
+inline const char* const harmonySourceNames[] = { "Style", "Progression", "Tonic", "MIDI In" };
 
 // One chord of the loop, and the scale the lines use over it: the key scale for diatonic chords, a related
 // scale that contains a borrowed chord (E7 in A minor: A harmonic minor; Fm: C minor), the key scale again
@@ -35,7 +36,10 @@ struct ChordSpan
 struct HarmonyTrack
 {
     int key = 9;
+    scales::Scale scale = scales::Scale::phrygian;
     std::vector<ChordSpan> spans;
+
+    bool inKey() const; // every chord's lines use the key scale (no borrowed chord)
 
     const ChordSpan& at (double beat) const;
 
@@ -63,7 +67,9 @@ struct HarmonySpec
     int bars = 4;
     std::vector<int> styleDegrees { 0 }; // Style: one degree per bar, repeated
     HarmonyParams progression;           // Progression: the CINEMATIC settings (key, scale, bars are taken from here)
-    bool scaleLock = true;               // every chord (and so every line) stays in the key scale
+    std::vector<Region> learnedChords;   // MIDI In: 4 bars of learned chords (empty: the tonic)
+    bool scaleLock = true;               // generated chords (and so every line) stay in the key scale; learned
+                                         // chords are kept as played, so the lines never fight your clip
 };
 
 // Deterministic for a given spec. `marks` receives the form's sections of a Progression (as generateProgression).

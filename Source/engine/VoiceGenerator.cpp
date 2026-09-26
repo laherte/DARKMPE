@@ -48,6 +48,12 @@ struct Syllable
     bool last = false;
     int degree = 0; // scale steps above the chord root
     int octave = 0;
+
+    // MIDI Learn: a syllable on a note of your lead keeps its pitch, length and velocity.
+    bool learned = false;
+    int semis = 0;
+    double fixedLength = -1.0;
+    float velocity = -1.0f;
 };
 
 int pickIndex (Rng& r, const std::vector<float>& w)
@@ -127,6 +133,51 @@ std::vector<Syllable> sentenceRhythm (const GenParams& p, const VoiceDef& def, i
     {
         s.step = at;
         at += s.steps;
+    }
+    return syl;
+}
+
+// MIDI Learn: the syllables of one bar on the notes of your lead (your melody, spoken) or on the hits of your
+// rhythm (the voice's own melody on your rhythm). Empty when you played nothing in that bar.
+std::vector<Syllable> learnedSyllables (const std::vector<LearnedNote>& notes, int bar, int n, bool lead, Rng& r)
+{
+    std::vector<const LearnedNote*> mine;
+    for (const auto& x : notes)
+        if (x.bar == bar)
+            mine.push_back (&x);
+    std::vector<Syllable> syl;
+    if (mine.empty())
+        return syl;
+
+    std::vector<float> velocities;
+    for (const auto* x : mine)
+        velocities.push_back (x->velocity);
+    std::sort (velocities.begin(), velocities.end());
+    const float median = velocities[velocities.size() / 2];
+    const int beat = std::max (1, n / 4);
+    const double stepLen = 4.0 / n;
+
+    for (size_t i = 0; i < mine.size(); ++i)
+    {
+        const auto& x = *mine[i];
+        const int next = i + 1 < mine.size() ? mine[i + 1]->step : n;
+        Syllable s;
+        s.step = x.step;
+        s.steps = std::max (1, next - x.step);
+        s.stress = x.step % beat == 0 || x.velocity >= std::max (0.75f, median + 0.05f);
+        s.last = i + 1 == mine.size();
+        if (lead)
+        {
+            s.learned = true;
+            s.degree = x.degree;
+            s.semis = x.semis;
+            s.fixedLength = x.length;
+            s.wordEnd = s.last || x.length < (s.steps - 0.5) * stepLen; // a rest after it ends the word
+        }
+        else
+            s.wordEnd = s.last || s.steps >= std::max (2, n / 8) || r.chance (0.35f);
+        s.velocity = x.velocity;
+        syl.push_back (s);
     }
     return syl;
 }
@@ -387,6 +438,11 @@ Phrase generateVoice (const GenParams& p, const ExprParams& e)
     struct Placed { Note note; Syllable syl; Sentence type; uint64_t key; };
     std::vector<Placed> placed;
 
+    // MIDI Learn: your lead is spoken as it is; on your rhythm the voice says its own sentences.
+    const bool learnedLead = p.motif == MotifSource::lead && p.learned != nullptr && ! p.learned->lead.empty();
+    const bool learnedRhythm = p.motif == MotifSource::rhythm && p.learned != nullptr && ! p.learned->rhythm.empty();
+    const auto learnedList = learnedLead || learnedRhythm ? learnedNotes (p, learnedRhythm) : std::vector<LearnedNote> {};
+
     for (int bar = 0; bar < bars; ++bar)
     {
         // The sentence: the same label says the same words (MUTATE re-writes everything but A);
@@ -415,12 +471,17 @@ Phrase generateVoice (const GenParams& p, const ExprParams& e)
         }
 
         auto rhythmRng = keyedRng ({ seed, wordSalt, key });
-        auto syl = sentenceRhythm (p, def, n, rhythmRng);
-        auto pitchRng = keyedRng ({ seed, pitchSalt, key });
-        sentenceMelody (syl, p, def, type, pitchRng);
-        if (! sections.empty() && sections[(size_t) bar].kind == SectionKind::statement)
-            for (auto& s : syl)
-                s.degree += sections[(size_t) bar].shift; // A', A+, A++: the sentence said higher
+        auto syl = learnedLead || learnedRhythm ? learnedSyllables (learnedList, bar % 4, n, learnedLead, rhythmRng)
+                                                : sentenceRhythm (p, def, n, rhythmRng);
+        if (! learnedLead)
+        {
+            auto pitchRng = keyedRng ({ seed, pitchSalt, key });
+            if (! syl.empty())
+                sentenceMelody (syl, p, def, type, pitchRng);
+            if (! sections.empty() && sections[(size_t) bar].kind == SectionKind::statement)
+                for (auto& s : syl)
+                    s.degree += sections[(size_t) bar].shift; // A', A+, A++: the sentence said higher
+        }
 
         for (size_t i = 0; i < syl.size(); ++i)
         {
@@ -428,12 +489,18 @@ Phrase generateVoice (const GenParams& p, const ExprParams& e)
             Note note;
             note.start = bar * 4.0 + s.step * stepLen;
             int pitch = harmony.pitch (note.start, tonic, s.degree) + 12 * s.octave;
-            while (pitch > highest) pitch -= 12;
-            while (pitch < lowest)  pitch += 12;
-            note.pitch = pitch;
+            if (s.semis != 0 && (! p.scaleLock || scales::inScale (pitch + s.semis, p.key, p.scale)))
+                pitch += s.semis; // a chromatic note of your lead
+            if (! s.learned) // your lead keeps its register
+            {
+                while (pitch > highest) pitch -= 12;
+                while (pitch < lowest)  pitch += 12;
+            }
+            note.pitch = std::clamp (pitch, 0, 127);
             note.accent = s.stress;
             const float jitter = keyedRng ({ seed, velSalt, key, (uint64_t) i }).uniform();
-            note.velocity = std::clamp ((s.stress ? 0.88f : 0.7f) + (s.last ? 0.04f : 0.0f) + 0.06f * jitter, 0.05f, 1.0f);
+            note.velocity = s.velocity >= 0.0f ? std::clamp (s.velocity, 0.05f, 1.0f)
+                                               : std::clamp ((s.stress ? 0.88f : 0.7f) + (s.last ? 0.04f : 0.0f) + 0.06f * jitter, 0.05f, 1.0f);
             placed.push_back ({ note, s, type, key });
         }
     }
@@ -451,7 +518,10 @@ Phrase generateVoice (const GenParams& p, const ExprParams& e)
         const double nextStart = hasNext ? placed[i + 1].note.start : out.lengthBeats;
         const bool contiguous = hasNext && std::abs (nextStart - (cur.note.start + slot)) < 1.0e-9;
         const bool inWord = contiguous && ! cur.syl.wordEnd;
-        if (inWord)
+        if (cur.syl.fixedLength > 0.0) // your lead: your articulation, tied where you played legato
+            cur.note.length = contiguous && cur.syl.fixedLength >= slot - 0.02 ? nextStart - cur.note.start
+                                                                                : std::min (cur.syl.fixedLength, slot);
+        else if (inWord)
             cur.note.length = nextStart - cur.note.start;
         else if (cur.syl.last)
             cur.note.length = slot - std::min (0.1, slot * 0.1);

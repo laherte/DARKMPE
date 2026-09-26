@@ -96,6 +96,12 @@ void PianoRoll::drawStatic (juce::Graphics& g)
 
     int lo = 127, hi = 0;
     bool anyNote = false;
+    for (const auto& n : shown->ghost.notes)
+    {
+        anyNote = true;
+        lo = std::min (lo, n.pitch);
+        hi = std::max (hi, n.pitch);
+    }
     for (const auto& stream : shown->streams)
     for (const auto& n : stream.phrase.notes)
     {
@@ -182,6 +188,17 @@ void PianoRoll::drawStatic (juce::Graphics& g)
             }
         }
     };
+
+    // MIDI Learn: your lead, as outlines under the output
+    for (const auto& n : shown->ghost.notes)
+    {
+        const float x0 = xOf (n.start, roll), x1 = xOf (n.end(), roll);
+        const auto rect = juce::Rectangle<float> (x0, yOf ((float) n.pitch) - rowH * 0.5f, std::max (2.0f, x1 - x0), rowH).reduced (0.0f, 0.5f);
+        g.setColour (chrome().withAlpha (0.12f));
+        g.fillRoundedRectangle (rect, 1.5f);
+        g.setColour (chrome().withAlpha (0.55f));
+        g.drawRoundedRectangle (rect.expanded (0.5f), 1.5f, 1.0f);
+    }
 
     if (layered)
         for (size_t i = 0; i < shown->streams.size(); ++i)

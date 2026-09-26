@@ -97,7 +97,8 @@ void apply (juce::AudioProcessorValueTreeState& state, const Preset& preset)
 
 juce::File userFolder()
 {
-    return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("DarkMPE").getChildFile ("Presets");
+    // MK2 keeps its own presets (they carry MK2-only settings); DarkMPE 1.x presets can be copied in.
+    return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("DarkMPE MK2").getChildFile ("Presets");
 }
 
 bool save (juce::AudioProcessorValueTreeState& state, int seed, int variation, const juce::File& file)

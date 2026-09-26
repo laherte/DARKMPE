@@ -82,6 +82,75 @@ std::vector<Captured> runWithInput (DarkMPEProcessor& proc, int blocks, int bloc
     return out;
 }
 
+// A host transport: plays from `ppq`, looping `loop` beats (like Live's loop brace).
+struct FakeHead : juce::AudioPlayHead
+{
+    double ppq = 0.0, bpm = 120.0;
+    bool playing = true;
+    juce::Optional<PositionInfo> getPosition() const override
+    {
+        PositionInfo p;
+        p.setIsPlaying (playing);
+        p.setBpm (bpm);
+        p.setPpqPosition (ppq);
+        return p;
+    }
+};
+
+using TimedMessages = std::vector<std::pair<double, juce::MidiMessage>>; // position in the host loop (beats)
+
+TimedMessages clipOf (const std::vector<std::tuple<double, double, int>>& notes) // start, length, pitch
+{
+    TimedMessages clip;
+    for (auto [start, length, pitch] : notes)
+    {
+        clip.push_back ({ start, juce::MidiMessage::noteOn (1, pitch, (juce::uint8) 100) });
+        clip.push_back ({ start + length, juce::MidiMessage::noteOff (1, pitch) });
+    }
+    return clip;
+}
+
+// Plays `clip` into the plugin's input for `beats` beats from host position `from`, the host looping `loop` beats,
+// and runs the message-thread LEARN work after every block. Returns the plugin's output.
+std::vector<Captured> playClip (DarkMPEProcessor& proc, FakeHead& head, const TimedMessages& clip, double from, double beats,
+                                double loop = 16.0, int blockSize = 480)
+{
+    std::vector<Captured> out;
+    const double sr = 48000.0;
+    proc.setPlayHead (&head);
+    proc.prepareToPlay (sr, blockSize);
+    const double perSample = head.bpm / 60.0 / sr;
+    const double blockBeats = blockSize * perSample;
+    juce::AudioBuffer<float> audio (2, blockSize);
+    double pos = from;
+    long long clock = 0;
+    for (double played = 0.0; played < beats; played += blockBeats)
+    {
+        juce::MidiBuffer midi;
+        for (const auto& [t, m] : clip)
+        {
+            // the clip loops with the host
+            const double loopT = std::fmod (t, loop);
+            double rel = loopT - pos;
+            if (rel < 0.0 && pos + blockBeats > loop)
+                rel += loop;
+            if (rel >= 0.0 && rel < blockBeats)
+                midi.addEvent (m, juce::jlimit (0, blockSize - 1, (int) (rel / perSample)));
+        }
+        head.ppq = pos;
+        proc.processBlock (audio, midi);
+        for (const auto meta : midi)
+            out.push_back ({ clock + meta.samplePosition, meta.getMessage() });
+        proc.updateLearn();
+        clock += blockSize;
+        pos += blockBeats;
+        if (pos >= loop - 1.0e-9)
+            pos -= loop; // the host's loop jumps back
+    }
+    proc.setPlayHead (nullptr);
+    return out;
+}
+
 int hangingNotes (const std::vector<Captured>& events)
 {
     std::set<std::pair<int, int>> open;
@@ -283,6 +352,101 @@ public:
             }
             expectGreaterThan (cc74, 50);
             expectGreaterThan (pressure, 50);
+        }
+
+        beginTest ("LEARN chords: from the track, on the host's bars, through the host's loop jump");
+        {
+            DarkMPEProcessor proc;
+            setParam (proc, "virtualOut", 0.0f);
+            setParam (proc, "mode", 0.0f);
+            setParam (proc, "scale", 1.0f); // Phrygian: the clip says otherwise (B natural in G)
+            proc.refreshNow();
+            const auto clip = clipOf ({ { 0.0, 3.9, 57 }, { 0.0, 3.9, 60 }, { 0.0, 3.9, 64 },
+                                        { 4.0, 3.9, 53 }, { 4.0, 3.9, 57 }, { 4.0, 3.9, 60 },
+                                        { 8.0, 3.9, 48 }, { 8.0, 3.9, 55 }, { 8.0, 3.9, 64 },
+                                        { 12.0, 3.9, 43 }, { 12.0, 3.9, 55 }, { 12.0, 3.9, 59 }, { 12.0, 3.9, 62 } });
+            proc.startLearn (dmpe::LearnKind::chords);
+            FakeHead head;
+            // Play is pressed on bar 2: LEARN starts there, runs through the loop's jump back to bar 1.
+            playClip (proc, head, clip, 4.0, 22.0);
+            expect (! proc.isLearning(), "LEARN must stop after 4 bars");
+            expect (proc.hasLearned (dmpe::LearnKind::chords));
+            expectEquals (proc.getHarmonyText(), juce::String ("Am  F  C  G"));
+            expectEquals ((int) proc.apvts.getRawParameterValue ("harmony")->load(), 3);
+            expectEquals ((int) proc.apvts.getRawParameterValue ("key")->load(), 9);
+            expectEquals ((int) proc.apvts.getRawParameterValue ("scale")->load(), 0);
+            expectEquals ((int) proc.apvts.getRawParameterValue ("bars")->load(), 2);
+            expect (proc.getLearnStatus().contains ("Am F C G"), proc.getLearnStatus());
+
+            // Saved with the project.
+            juce::MemoryBlock state;
+            proc.getStateInformation (state);
+            DarkMPEProcessor restored;
+            setParam (restored, "virtualOut", 0.0f);
+            restored.setStateInformation (state.getData(), (int) state.getSize());
+            expect (restored.hasLearned (dmpe::LearnKind::chords));
+            expectEquals (restored.getHarmonyText(), juce::String ("Am  F  C  G"));
+
+            proc.forgetLearned (dmpe::LearnKind::chords);
+            expect (! proc.hasLearned (dmpe::LearnKind::chords));
+            expectEquals ((int) proc.apvts.getRawParameterValue ("harmony")->load(), 0);
+        }
+
+        beginTest ("LEARN lead: your notes come out, drawn under the output");
+        {
+            DarkMPEProcessor proc;
+            setParam (proc, "virtualOut", 0.0f);
+            setParam (proc, "mode", 0.0f);
+            setParam (proc, "slide", 0.0f);
+            proc.refreshNow();
+            const std::vector<std::tuple<double, double, int>> tune { { 0.0, 0.4, 69 }, { 0.5, 0.4, 72 }, { 1.0, 0.9, 76 }, { 2.5, 0.4, 74 },
+                                                                      { 4.0, 1.4, 77 }, { 6.0, 0.4, 76 }, { 8.0, 0.9, 72 }, { 12.0, 3.5, 69 } };
+            proc.startLearn (dmpe::LearnKind::lead);
+            FakeHead head;
+            playClip (proc, head, clipOf (tune), 0.0, 17.0);
+            expect (! proc.isLearning());
+            expectEquals ((int) proc.apvts.getRawParameterValue ("motif")->load(), 1);
+            expectEquals ((int) proc.apvts.getRawParameterValue ("rate")->load(), 3); // 1/16
+            const auto r = proc.getRendered();
+            const auto& notes = r->focused().phrase.notes;
+            expectEquals ((int) notes.size(), (int) tune.size());
+            for (size_t i = 0; i < tune.size() && i < notes.size(); ++i)
+            {
+                expectWithinAbsoluteError (notes[i].start, std::get<0> (tune[i]), 1.0e-6);
+                expectEquals (notes[i].pitch, std::get<2> (tune[i]));
+            }
+            expectEquals ((int) r->ghost.notes.size(), (int) tune.size());
+        }
+
+        beginTest ("LEARN waits for the first note, and can be cancelled");
+        {
+            DarkMPEProcessor proc;
+            setParam (proc, "virtualOut", 0.0f);
+            proc.startLearn (dmpe::LearnKind::rhythm);
+            FakeHead head;
+            playClip (proc, head, {}, 0.0, 20.0);
+            expect (proc.isLearning());
+            expect (proc.getLearnStatus().contains ("waiting"));
+            proc.cancelLearn();
+            expect (! proc.isLearning());
+        }
+
+        beginTest ("CAPTURE through the host's loop jump keeps the take in order");
+        {
+            DarkMPEProcessor proc;
+            setParam (proc, "virtualOut", 0.0f);
+            setParam (proc, "mode", 1.0f);
+            proc.setCapturing (true);
+            FakeHead head;
+            // From bar 4 of a 4-bar loop: two notes before the jump back, two after.
+            playClip (proc, head, clipOf ({ { 12.5, 0.4, 60 }, { 14.5, 0.4, 62 }, { 0.5, 0.4, 64 }, { 2.5, 0.4, 65 } }), 12.0, 8.0);
+            proc.setCapturing (false);
+            expect (proc.hasSource());
+            expect (proc.describeSource().contains ("4 notes"), proc.describeSource());
+            std::set<long> starts;
+            for (const auto& n : proc.getRendered()->focused().phrase.notes)
+                starts.insert (std::lround (n.start * 1000.0));
+            expect (starts == std::set<long> { 500, 2500, 4500, 6500 }, "the take must keep its order");
         }
 
         beginTest ("Mono lead: channel 1 with its bend range, no MPE zone");
@@ -617,17 +781,31 @@ static ProcessorTests processorTests;
 static int snapshots (const juce::File& dir)
 {
     dir.createDirectory();
-    const char* modeNames[] = { "Generate", "Transform", "Cinematic", "Kit", "Generate Voice" };
-    for (int shot = 0; shot < 5; ++shot)
+    const char* modeNames[] = { "Generate", "Transform", "Cinematic", "Kit", "Generate Voice", "Generate Learned" };
+    for (int shot = 0; shot < 6; ++shot)
         for (float scale : { 1.0f, 0.75f })
         {
-            const int mode = shot == 4 ? 0 : shot;
+            const int mode = shot >= 4 ? 0 : shot;
             DarkMPEProcessor proc;
             setParam (proc, "virtualOut", 0.0f);
             if (shot == 4)
             {
                 setParam (proc, "engine", 1.0f);
                 setParam (proc, "harmony", 1.0f);
+            }
+            if (shot == 5)
+            {
+                // LEARN: chords, then a lead over them (MUTATE once, so the roll shows yours and the variation).
+                FakeHead head;
+                proc.startLearn (dmpe::LearnKind::chords);
+                playClip (proc, head, clipOf ({ { 0.0, 3.9, 57 }, { 0.0, 3.9, 60 }, { 0.0, 3.9, 64 }, { 4.0, 3.9, 53 }, { 4.0, 3.9, 57 }, { 4.0, 3.9, 60 },
+                                                { 8.0, 3.9, 48 }, { 8.0, 3.9, 55 }, { 8.0, 3.9, 64 }, { 12.0, 3.9, 50 }, { 12.0, 3.9, 56 }, { 12.0, 3.9, 59 }, { 12.0, 3.9, 64 } }),
+                          0.0, 17.0);
+                proc.startLearn (dmpe::LearnKind::lead);
+                playClip (proc, head, clipOf ({ { 0.0, 0.4, 69 }, { 0.5, 0.4, 72 }, { 1.0, 0.9, 76 }, { 2.5, 0.4, 74 }, { 4.0, 1.4, 77 }, { 6.0, 0.4, 76 },
+                                                { 8.0, 0.9, 72 }, { 9.0, 0.4, 71 }, { 10.0, 1.9, 72 }, { 12.0, 0.4, 71 }, { 12.5, 0.4, 68 }, { 13.0, 2.5, 69 } }),
+                          0.0, 17.0);
+                proc.mutate();
             }
             if (mode == 1)
             {
@@ -637,7 +815,7 @@ static int snapshots (const juce::File& dir)
             setParam (proc, "mode", (float) mode);
             setParam (proc, "kSiren", 1.0f);
             setParam (proc, "kFocus", 1.0f);
-            setParam (proc, "form", mode == 1 ? 0.0f : 2.0f); // A B A C
+            setParam (proc, "form", mode == 1 || shot == 5 ? 0.0f : 2.0f); // A B A C
             setParam (proc, "preview", 1.0f);
             proc.refreshNow();
             proc.prepareToPlay (48000.0, 512);

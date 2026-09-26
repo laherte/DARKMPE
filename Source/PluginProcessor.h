@@ -8,6 +8,7 @@
 #include "engine/ExpressionShaper.h"
 #include "engine/KitGenerator.h"
 #include "engine/MidiFileIO.h"
+#include "engine/MidiLearn.h"
 #include "engine/MelodyGenerator.h"
 #include "engine/MpeRenderer.h"
 #include "engine/VoiceGenerator.h"
@@ -38,6 +39,7 @@ struct Rendered
     double lengthBeats = 4.0;
     std::vector<std::pair<double, juce::String>> sections; // phrase form: where A, B, C... start (beats)
     std::vector<std::pair<double, juce::String>> chords;   // GENERATE / KIT: the chords the lines follow (beats)
+    dmpe::Phrase ghost;                                    // MIDI Learn: your lead, drawn under the output
 
     const Stream& focused() const { return streams[(size_t) focus]; }
 };
@@ -61,7 +63,7 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
-    const juce::String getName() const override { return "DarkMPE"; }
+    const juce::String getName() const override { return "DarkMPE MK2"; }
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return true; }
     bool isMidiEffect() const override { return false; }
@@ -111,7 +113,19 @@ public:
     bool loadUserPreset (const juce::File& file);
 
     void setCapturing (bool shouldCapture);
-    bool isCapturing() const { return capturing.load(); }
+    bool isCapturing() const { return capturing.load() && ! learning.load(); }
+
+    // MIDI Learn: listens to 4 bars of what plays on the plugin's track (from the first note, on the host's bars),
+    // understands what `kind` says it is and applies it (Harmony = MIDI In, Motif = Your Lead / Your Rhythm,
+    // Key / Scale / Rate / Bars). What was learned is saved with the project.
+    void startLearn (dmpe::LearnKind kind);
+    void cancelLearn();
+    bool isLearning() const { return learning.load(); }
+    dmpe::LearnKind getLearnKind() const { return learnKind; }
+    juce::String getLearnStatus() const { return learnStatus; } // progress while listening, then the result
+    bool hasLearned (dmpe::LearnKind kind) const;
+    void forgetLearned (dmpe::LearnKind kind);
+    void updateLearn(); // message thread: progress, and the analysis once 4 bars were heard (the timer calls it)
 
     juce::File writeMidiFile (const juce::File& target) const; // the focused stream; returns the written file or {}
     juce::Array<juce::File> writeAllStreams (const juce::File& target) const; // KIT: "<name> - <Layer>.mid" per layer
@@ -131,7 +145,7 @@ public:
     const ChannelMonitor& monitor (int channel) const { return mon[(size_t) juce::jlimit (1, 16, channel)]; }
 
     juce::String getPortName() const { return portName; }
-    juce::String getLayerPortName (int layer) const; // "DarkMPE Out" for the lead / main output
+    juce::String getLayerPortName (int layer) const; // "DarkMPE MK2 Out" for the lead / main output
     bool isLayerPortOpen (int layer) const { return ports.isOpen (layer); }
     int getFocusLayer() const;
     void setFocusLayer (int layer);
@@ -163,6 +177,13 @@ private:
     void applyPendingProgram(); // message thread: a program change requested by the host (from any thread)
     void rebuild();
     void finishCapture();
+    struct CaptureWindow { int count = 0; double origin = 0.0; double phase = 0.0; bool found = false; };
+    CaptureWindow captureWindow() const;                             // from the first note-on, on the host's bars
+    dmpe::Phrase capturedPhrase (const CaptureWindow& w, double length, bool loop, dmpe::LoadInfo* info = nullptr) const;
+    void finishLearn();
+    void setLearned (std::shared_ptr<const dmpe::Learned> l, bool toState); // + the state tree
+    dmpe::Learned currentLearned() const;
+    void loadLearnedFromState();
     juce::ValueTree history();
     void historyStep (int delta);
     void applySeed (int seed, int variation);
@@ -190,7 +211,7 @@ private:
     void finishBlock (juce::MidiBuffer& hostMidi, int numSamples); // host out + monitor + virtual ports
     void updatePorts();                                            // message thread
 
-    // ---- virtual MIDI ports ("DarkMPE Out" + KIT layers)
+    // ---- virtual MIDI ports ("DarkMPE MK2 Out" + KIT layers: MK2 ports never clash with DarkMPE 1.x ones)
     PortHub ports;
     juce::String portName;
     int instanceNumber = 1;
@@ -253,11 +274,19 @@ private:
     std::atomic<double> lastBpm { 120.0 };
 
     // ---- capture (audio thread writes, message thread reads after stop)
-    struct CapturedEvent { double beat; juce::uint8 bytes[3]; int size; };
+    // `beat` runs on without jumps (the host's loop may jump back); `host` is the host position, -1 when stopped.
+    struct CapturedEvent { double beat; double host; juce::uint8 bytes[3]; int size; };
     std::array<CapturedEvent, 16384> captureBuffer {};
     std::atomic<int> captureCount { 0 };
     std::atomic<bool> capturing { false };
     double captureClock = 0.0;
+    std::atomic<double> captureClockNow { 0.0 }; // captureClock at the end of the last block
+
+    // ---- MIDI Learn (message thread; `learned` is replaced under rebuildLock)
+    std::atomic<bool> learning { false };
+    dmpe::LearnKind learnKind = dmpe::LearnKind::chords;
+    juce::String learnStatus;
+    std::shared_ptr<const dmpe::Learned> learned;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DarkMPEProcessor)
 };

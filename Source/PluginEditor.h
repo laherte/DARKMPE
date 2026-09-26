@@ -107,6 +107,7 @@ private:
     void showScaleMenu();
     void showSeedMenu();
     void showPresetMenu();
+    void showLearnMenu();
     void updateSeedControls();
     void setScale (float scale);
 
@@ -116,6 +117,7 @@ private:
 
     juce::TextButton genTab { "GENERATE" }, xformTab { "TRANSFORM" }, cineTab { "CINEMATIC" }, kitTab { "KIT" };
     juce::TextButton newBtn { "NEW" }, mutateBtn { "MUTATE" }, loadBtn { "LOAD MIDI" }, captureBtn { "CAPTURE" }, exportBtn { "EXPORT" };
+    juce::TextButton learnBtn { "LEARN" }; // MIDI Learn: asks what the clip plays, then listens to 4 bars
     juce::TextButton scaleBtn { "100%" };
     juce::TextButton prevBtn, nextBtn, seedBtn, favBtn; // seed history and favourites
     juce::TextButton presetBtn;
@@ -139,6 +141,8 @@ private:
     bool initialised = false;
     DarkMPEProcessor::Mode shownMode { DarkMPEProcessor::Mode::generate };
     bool shownVoice = false;
+    bool shownLearning = false;
+    double learnResultUntil = 0.0; // ms: the LEARN result stays in the status bar for a while
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DarkMPEEditor)
 };

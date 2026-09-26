@@ -11,6 +11,7 @@
 #include "engine/VoicingEngine.h"
 #include "engine/VoiceGenerator.h"
 #include "engine/LeadHarmony.h"
+#include "engine/MidiLearn.h"
 
 #include <map>
 #include <tuple>
@@ -1563,6 +1564,393 @@ public:
 
 static V2Tests v2Tests;
 
+// ---- MIDI Learn
+static Note clipNote (double start, double length, int pitch, float velocity = 0.8f)
+{
+    Note n;
+    n.start = start;
+    n.length = length;
+    n.pitch = pitch;
+    n.velocity = velocity;
+    return n;
+}
+
+// Chords held for `each` beats, one after the other.
+static Phrase heldChords (const std::vector<std::vector<int>>& chords, double each)
+{
+    Phrase p;
+    p.lengthBeats = learnBeats;
+    for (size_t i = 0; i < chords.size(); ++i)
+        for (int pitch : chords[i])
+            p.notes.push_back (clipNote ((double) i * each, each - 0.1, pitch));
+    return p;
+}
+
+static juce::String symbols (const std::vector<Region>& chords)
+{
+    juce::String s;
+    for (const auto& c : chords)
+        s << chordSymbol (c) << " ";
+    return s.trim();
+}
+
+class MidiLearnTests : public juce::UnitTest
+{
+public:
+    MidiLearnTests() : juce::UnitTest ("DarkMPE MK2: MIDI Learn") {}
+
+    void runTest() override
+    {
+        const std::vector<std::vector<int>> amFCG { { 57, 60, 64 }, { 53, 57, 60 }, { 48, 55, 64 }, { 43, 55, 59, 62 } };
+
+        beginTest ("Chords: block, broken, under a melody, slash chords, sevenths, power chords, 2-beat chords");
+        {
+            const auto block = chordsFromClip (heldChords (amFCG, 4.0), learnBeats);
+            expectEquals (symbols (block), juce::String ("Am F C G"));
+            expectEquals ((int) block.size(), 4);
+            for (size_t i = 0; i < block.size(); ++i)
+            {
+                expectWithinAbsoluteError (block[i].start, (double) i * 4.0, 1.0e-9);
+                expectWithinAbsoluteError (block[i].length, 4.0, 1.0e-9);
+            }
+
+            // Broken chords in 8ths: root, third, fifth, third.
+            Phrase broken;
+            for (int bar = 0; bar < 4; ++bar)
+            {
+                const auto& c = amFCG[(size_t) bar];
+                const int order[] = { 0, 1, 2, 1 };
+                for (int k = 0; k < 8; ++k)
+                    broken.notes.push_back (clipNote (bar * 4.0 + k * 0.5, 0.45, c[(size_t) order[k % 4]]));
+            }
+            expectEquals (symbols (chordsFromClip (broken, learnBeats)), juce::String ("Am F C G"));
+
+            // The same chords under a melody of 8ths with passing notes.
+            auto withMelody = heldChords (amFCG, 4.0);
+            const int tune[] = { 76, 74, 72, 71, 72, 74, 76, 77 };
+            for (int bar = 0; bar < 4; ++bar)
+                for (int k = 0; k < 8; ++k)
+                    withMelody.notes.push_back (clipNote (bar * 4.0 + k * 0.5, 0.45, tune[(k + bar) % 8]));
+            juce::String roots; // a melody note may colour the chord (F with an E on top: Fmaj7): the roots stay
+            for (const auto& c : chordsFromClip (withMelody, learnBeats))
+                roots << scales::keyNames[scales::mod (c.pitches.front(), 12)] << " ";
+            expectEquals (roots.trim(), juce::String ("A F C G"));
+
+            // Lament bass: slash chords from the lowest note, and a dominant seventh with its leading tone.
+            expectEquals (symbols (chordsFromClip (heldChords ({ { 45, 57, 60, 64 }, { 43, 59, 64 }, { 41, 57, 62 }, { 40, 56, 59, 62 } }, 4.0), learnBeats)),
+                          juce::String ("Am Em/G Dm/F E7"));
+
+            // Power chords.
+            expectEquals (symbols (chordsFromClip (heldChords ({ { 45, 52 }, { 41, 48 }, { 48, 55 }, { 43, 50 } }, 4.0), learnBeats)),
+                          juce::String ("A5 F5 C5 G5"));
+
+            // A slow arpeggio (one note per beat): the chords change on the bar lines.
+            Phrase slow;
+            const int arpeggio[] = { 69, 72, 76, 72, 69, 72, 77, 72, 67, 72, 76, 72, 67, 71, 74, 71 };
+            for (int k = 0; k < 16; ++k)
+                slow.notes.push_back (clipNote (k * 1.0, 0.9, arpeggio[k]));
+            juce::String slowRoots;
+            for (const auto& c : chordsFromClip (slow, learnBeats))
+                slowRoots << scales::keyNames[scales::mod (c.pitches.front(), 12)] << "@" << juce::String (c.start, 0) << " ";
+            expectEquals (slowRoots.trim(), juce::String ("A@0 F@4 C@8 G@12"));
+
+            // A chord ringing through bars of silence does not become the tonic.
+            auto sparse = heldChords ({ { 57, 60, 64 }, {}, { 53, 57, 60 }, {} }, 4.0);
+            const auto sparseKey = analyseClip (LearnKind::chords, sparse, 9, scales::Scale::naturalMinor);
+            expectEquals (sparseKey.key.key, 9);
+
+            // Two chords per bar.
+            const auto half = chordsFromClip (heldChords ({ { 57, 60, 64 }, { 50, 57, 62, 65 }, { 52, 56, 59 }, { 57, 60, 64 },
+                                                            { 57, 60, 64 }, { 50, 57, 62, 65 }, { 52, 56, 59 }, { 57, 60, 64 } }, 2.0), learnBeats);
+            expectEquals (symbols (half), juce::String ("Am Dm E Am Dm E Am"));
+            expectWithinAbsoluteError (half[1].start, 2.0, 1.0e-9);
+
+            expect (chordsFromClip (Phrase {}, learnBeats).empty());
+        }
+
+        beginTest ("Key and scale: the scale that holds the notes, the tonic the roots point at, else what was set");
+        {
+            auto keyOf = [] (const Phrase& clip, int key, scales::Scale scale)
+            {
+                const auto r = analyseClip (LearnKind::chords, clip, key, scale);
+                return juce::String (scales::keyNames[r.key.key]) + " " + scales::scaleNames[(size_t) r.key.scale];
+            };
+            expectEquals (keyOf (heldChords (amFCG, 4.0), 9, scales::Scale::phrygian), juce::String ("A Natural Minor"));
+            expectEquals (keyOf (heldChords ({ { 57, 60, 64 }, { 58, 62, 65 }, { 55, 58, 62 }, { 58, 62, 65 } }, 4.0), 9, scales::Scale::naturalMinor),
+                          juce::String ("A Phrygian"));
+            expectEquals (keyOf (heldChords ({ { 57, 60, 64 }, { 53, 57, 60 }, { 50, 53, 57 }, { 52, 56, 59, 62 } }, 4.0), 9, scales::Scale::naturalMinor),
+                          juce::String ("A Harmonic Minor"));
+            // Power chords do not say minor or phrygian: the scale already set stays.
+            const auto fifths = heldChords ({ { 45, 52 }, { 41, 48 }, { 43, 50 }, { 45, 52 } }, 4.0);
+            expectEquals (keyOf (fifths, 9, scales::Scale::phrygian), juce::String ("A Phrygian"));
+            expectEquals (keyOf (fifths, 9, scales::Scale::naturalMinor), juce::String ("A Natural Minor"));
+
+            // A D Dorian melody (the B natural, D first, last and lowest).
+            Phrase dorian;
+            const int line[] = { 62, 64, 65, 67, 69, 71, 72, 69, 67, 65, 64, 62 };
+            for (int k = 0; k < 12; ++k)
+                dorian.notes.push_back (clipNote (k * 1.0, 0.9, line[k]));
+            const auto lead = analyseClip (LearnKind::lead, dorian, 9, scales::Scale::naturalMinor);
+            expect (lead.ok);
+            expectEquals (lead.key.key, 2);
+            expectEquals ((int) lead.key.scale, (int) scales::Scale::dorian);
+            expectEquals ((int) lead.events.size(), 12);
+        }
+
+        beginTest ("Bass line: one root per half bar, the scale's chords on them");
+        {
+            Phrase bass;
+            const int roots[] = { 45, 41, 48, 43 };
+            for (int bar = 0; bar < 4; ++bar)
+                for (int s = 0; s < 16; ++s)
+                    bass.notes.push_back (clipNote (bar * 4.0 + s * 0.25, 0.2, s == 15 ? roots[bar] + 2 : (s % 4 == 2 ? roots[bar] + 12 : roots[bar])));
+            const auto r = analyseClip (LearnKind::bass, bass, 9, scales::Scale::naturalMinor);
+            expect (r.ok);
+            expectEquals (symbols (r.chords), juce::String ("Am F C G"));
+            expectEquals (r.key.key, 9);
+
+            // A root per half bar.
+            Phrase halves;
+            for (int h = 0; h < 8; ++h)
+                halves.notes.push_back (clipNote (h * 2.0, 1.9, h % 2 == 0 ? 45 : 40));
+            const auto split = bassRoots (halves, learnBeats);
+            expectEquals ((int) split.size(), 8);
+            expectEquals (split[1].pc, 4);
+        }
+
+        beginTest ("Grid: 1/16, 1/16 triplets, 1/32");
+        {
+            std::vector<double> straight, triplets, fine;
+            for (int k = 0; k < 16; ++k)
+            {
+                straight.push_back (k * 0.25);
+                triplets.push_back (k / 6.0);
+                fine.push_back (k * 0.125);
+            }
+            expectEquals ((int) detectRate (straight), (int) Rate::sixteenth);
+            expectEquals ((int) detectRate (triplets), (int) Rate::sixteenthTriplet);
+            expectEquals ((int) detectRate (fine), (int) Rate::thirtySecond);
+        }
+
+        // A learned song: Am F C G and a lead over it.
+        auto learned = std::make_shared<Learned>();
+        learned->chords = chordsFromClip (heldChords (amFCG, 4.0), learnBeats);
+        const std::vector<LearnedEvent> tune {
+            { 0.0, 1.0, 69, 0.9f }, { 1.0, 0.5, 72, 0.7f }, { 1.5, 0.5, 71, 0.7f }, { 2.0, 1.75, 69, 0.8f },
+            { 4.0, 0.5, 69, 0.9f }, { 4.5, 0.5, 72, 0.7f }, { 5.0, 2.0, 77, 0.85f }, { 7.0, 0.75, 76, 0.7f },
+            { 8.0, 1.5, 76, 0.9f }, { 9.5, 0.5, 74, 0.7f }, { 10.0, 1.0, 72, 0.8f }, { 11.0, 1.0, 67, 0.6f },
+            { 12.0, 0.25, 67, 0.9f }, { 12.25, 0.25, 71, 0.7f }, { 12.5, 0.5, 74, 0.7f }, { 13.0, 2.5, 71, 0.8f } };
+        learned->lead = tune;
+
+        auto song = [&learned]
+        {
+            GenParams gp;
+            gp.scale = scales::Scale::naturalMinor;
+            gp.harmony = HarmonySource::learned;
+            gp.motif = MotifSource::lead;
+            gp.learned = learned;
+            gp.slide = 0.0f;
+            return gp;
+        };
+
+        beginTest ("Your lead comes back note for note over your chords, and moves with other chords");
+        {
+            auto gp = song();
+            const auto mel = generateMelody (gp);
+            expectEquals ((int) mel.notes.size(), (int) tune.size());
+            for (size_t i = 0; i < tune.size() && i < mel.notes.size(); ++i)
+            {
+                expectWithinAbsoluteError (mel.notes[i].start, tune[i].start, 1.0e-9);
+                expectEquals (mel.notes[i].pitch, tune[i].pitch);
+                expectWithinAbsoluteError (mel.notes[i].length, tune[i].length, 1.0e-9);
+                expectWithinAbsoluteError (mel.notes[i].velocity, tune[i].velocity, 1.0e-6f);
+            }
+
+            gp.bars = 8; // the idea comes round again
+            const auto eight = generateMelody (gp);
+            expectEquals ((int) eight.notes.size(), 2 * (int) tune.size());
+            for (size_t i = 0; i < tune.size() && i + tune.size() < eight.notes.size(); ++i)
+            {
+                expectEquals (eight.notes[i + tune.size()].pitch, tune[i].pitch);
+                expectWithinAbsoluteError (eight.notes[i + tune.size()].start, tune[i].start + 16.0, 1.0e-9);
+            }
+
+            gp = song();
+            gp.baseOctave = 2; // Oct Base moves your line by an octave
+            const auto low = generateMelody (gp);
+            for (size_t i = 0; i < tune.size() && i < low.notes.size(); ++i)
+                expectEquals (low.notes[i].pitch, tune[i].pitch - 12);
+
+            // Over the Phrygian Dark progression: same rhythm, every note in the scale, and not the same notes.
+            gp = song();
+            gp.harmony = HarmonySource::progression;
+            gp.progression = Progression::phrygianDark;
+            const auto moved = generateMelody (gp);
+            expectEquals ((int) moved.notes.size(), (int) tune.size());
+            int changed = 0;
+            for (size_t i = 0; i < tune.size() && i < moved.notes.size(); ++i)
+            {
+                expectWithinAbsoluteError (moved.notes[i].start, tune[i].start, 1.0e-9);
+                expect (scales::inScale (moved.notes[i].pitch, gp.key, gp.scale));
+                changed += moved.notes[i].pitch != tune[i].pitch ? 1 : 0;
+            }
+            expectGreaterThan (changed, 0);
+
+            // MUTATE keeps your rhythm and bars 1 and 3, and varies the answers.
+            int varied = 0;
+            for (int v = 1; v <= 6; ++v)
+            {
+                gp = song();
+                gp.variation = v;
+                const auto m = generateMelody (gp);
+                expectEquals ((int) m.notes.size(), (int) tune.size());
+                for (size_t i = 0; i < tune.size() && i < m.notes.size(); ++i)
+                {
+                    expectWithinAbsoluteError (m.notes[i].start, tune[i].start, 1.0e-9);
+                    const bool answer = tune[i].start >= 4.0 && tune[i].start < 8.0 ? true : tune[i].start >= 12.0;
+                    if (! answer)
+                        expectEquals (m.notes[i].pitch, tune[i].pitch, "MUTATE must keep bars 1 and 3");
+                    varied += answer && m.notes[i].pitch != tune[i].pitch ? 1 : 0;
+                }
+            }
+            expectGreaterThan (varied, 0);
+
+            // A form takes your first bar as the idea A (the same notes over the same chord).
+            gp = song();
+            gp.form = Form::abac;
+            gp.harmony = HarmonySource::tonic;
+            gp.learned = std::make_shared<Learned> (Learned { {}, tune, {} });
+            const auto form = generateMelody (gp);
+            std::vector<std::pair<long, int>> a0, a2, first;
+            for (const auto& n : form.notes)
+            {
+                if (n.start < 4.0) a0.push_back ({ std::lround (n.start * 1000.0), n.pitch });
+                if (n.start >= 8.0 && n.start < 12.0) a2.push_back ({ std::lround ((n.start - 8.0) * 1000.0), n.pitch });
+            }
+            for (const auto& e : tune)
+                if (e.start < 4.0)
+                    first.push_back ({ std::lround (e.start * 1000.0), e.pitch });
+            expect (a0 == first, "A is your first bar");
+            expect (a0 == a2, "A must come back");
+        }
+
+        beginTest ("Your chromatic notes: kept without Scale Lock, in the scale with it");
+        {
+            auto chromatic = std::make_shared<Learned> (*learned);
+            chromatic->lead[2].pitch = 70; // A# over Am
+            auto gp = song();
+            gp.learned = chromatic;
+            gp.scaleLock = false;
+            expectEquals (generateMelody (gp).notes[2].pitch, 70);
+            gp.scaleLock = true;
+            expect (scales::inScale (generateMelody (gp).notes[2].pitch, gp.key, gp.scale));
+        }
+
+        beginTest ("Your rhythm: the riff (and the voice) sounds where you played");
+        {
+            auto rhythmic = std::make_shared<Learned>();
+            for (int bar = 0; bar < 4; ++bar)
+                for (double t : { 0.0, 0.75, 1.5, 2.0, 2.75, 3.5 })
+                    if (! (bar == 3 && t > 3.0))
+                        rhythmic->rhythm.push_back ({ bar * 4.0 + t + (bar == 1 ? 0.25 : 0.0) * (t > 0.0 ? 1.0 : 0.0), 0.2, -1, t == 0.0 ? 1.0f : 0.7f });
+            std::vector<long> want;
+            for (const auto& e : rhythmic->rhythm)
+                want.push_back (std::lround (e.start * 1000.0));
+
+            for (int style = 0; style < (int) Style::count; ++style)
+            {
+                GenParams gp;
+                gp.style = (Style) style;
+                gp.motif = MotifSource::rhythm;
+                gp.learned = rhythmic;
+                gp.density = style % 2 == 0 ? 0.0f : 1.0f; // your rhythm, whatever the density
+                std::vector<long> got;
+                for (const auto& n : generateMelody (gp).notes)
+                    got.push_back (std::lround (n.start * 1000.0));
+                expect (got == want, juce::String (styleNames[style]) + ": not your rhythm");
+            }
+
+            GenParams gv;
+            gv.engine = LeadEngine::voice;
+            gv.motif = MotifSource::rhythm;
+            gv.learned = rhythmic;
+            std::vector<long> spoken;
+            for (const auto& n : generateLead (gv, {}).notes)
+                spoken.push_back (std::lround (n.start * 1000.0));
+            expect (spoken == want, "the voice must speak on your rhythm");
+        }
+
+        beginTest ("Voice speaks your lead: your notes, with vowels and inflection");
+        {
+            auto gp = song();
+            gp.engine = LeadEngine::voice;
+            const auto spoken = generateLead (gp, {});
+            expectEquals ((int) spoken.notes.size(), (int) tune.size());
+            float lo = 1.0f, hi = 0.0f;
+            for (size_t i = 0; i < tune.size() && i < spoken.notes.size(); ++i)
+            {
+                expectWithinAbsoluteError (spoken.notes[i].start, tune[i].start, 1.0e-9);
+                expectEquals (spoken.notes[i].pitch, tune[i].pitch);
+                expect (spoken.notes[i].lockedExpr);
+                for (const auto& pt : spoken.notes[i].slide)
+                {
+                    lo = std::min (lo, pt.v);
+                    hi = std::max (hi, pt.v);
+                }
+            }
+            expectGreaterThan (hi - lo, 0.3f);
+            expectLessOrEqual (maxPolyphony (spoken), 1);
+        }
+
+        beginTest ("Harmony MIDI In: the KIT follows your chords, borrowed chords are kept, the pad plays them");
+        {
+            auto dominant = std::make_shared<Learned>();
+            dominant->chords = chordsFromClip (heldChords ({ { 57, 60, 64 }, { 53, 57, 60 }, { 50, 53, 57 }, { 52, 56, 59, 62 } }, 4.0), learnBeats);
+            KitParams kp;
+            kp.gen.scale = scales::Scale::naturalMinor;
+            kp.gen.harmony = HarmonySource::learned;
+            kp.gen.learned = dominant;
+            kp.pad.motion = Motion::pulse; // chords struck again: the pad's notes are the chord tones
+            kp.pad.reharm = Reharm::off;
+            kp.pad.tension = 0.0f;
+            kp.gen.scaleLock = true;
+            kp.gen.bars = 8;
+            const auto track = leadHarmony (kp.gen);
+            expectEquals ((int) track.spans.size(), 8);
+            expectEquals (juce::String (chordSymbol (track.spans[7].chord)), juce::String ("E7"));
+            expectEquals ((int) track.spans[3].scale, (int) scales::Scale::harmonicMinor);
+            expect (! track.inKey());
+
+            bool padLeadingTone = false;
+            for (const auto& part : generateKit (kp))
+            {
+                if (part.layer == Layer::pad)
+                    for (const auto& n : part.phrase.notes)
+                        padLeadingTone = padLeadingTone || (scales::mod (n.pitch, 12) == 8 && n.start >= 12.0 - 1.0 && n.start < 16.0);
+                if (part.layer == Layer::bass)
+                    for (const auto& n : part.phrase.notes)
+                        if (n.start >= 12.0 && n.start < 16.0 && (int) std::floor (n.start) % 4 == 0)
+                            expectEquals (scales::mod (n.pitch, 12), 4, "the bass plays E under E7");
+            }
+            expect (padLeadingTone, "the pad keeps your G#");
+
+            // Nothing learned: MIDI In is the tonic.
+            GenParams empty;
+            empty.harmony = HarmonySource::learned;
+            expectEquals ((int) leadHarmony (empty).spans.size(), 1);
+        }
+
+        beginTest ("Nothing heard");
+        {
+            const auto r = analyseClip (LearnKind::chords, Phrase {}, 9, scales::Scale::phrygian);
+            expect (! r.ok);
+            expect (! r.message.empty());
+        }
+    }
+};
+
+static MidiLearnTests midiLearnTests;
+
 static EngineTests engineTests;
 static CinematicTests cinematicTests;
 static MpeImportTests mpeImportTests;
@@ -1779,7 +2167,7 @@ int main (int argc, char** argv)
 
     juce::UnitTestRunner runner;
     runner.setAssertOnFailure (false);
-    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &harmonyTests, &kitTests, &formTests, &renderTests, &v2Tests });
+    runner.runTests ({ &engineTests, &mpeImportTests, &cinematicTests, &harmonyTests, &kitTests, &formTests, &renderTests, &v2Tests, &midiLearnTests });
 
     int failures = 0;
     for (int i = 0; i < runner.getNumResults(); ++i)

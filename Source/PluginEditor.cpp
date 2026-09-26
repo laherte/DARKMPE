@@ -176,6 +176,18 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
                               });
     };
     scaleBtn.onClick = [this] { showScaleMenu(); };
+    learnBtn.onClick = [this]
+    {
+        if (proc.isLearning())
+        {
+            proc.cancelLearn();
+            setStatus (proc.getLearnStatus());
+        }
+        else
+            showLearnMenu();
+    };
+    learnBtn.setTooltip ("MIDI Learn: put your clip on this track, pick what it plays, press Play. "
+                         "4 bars: chords or a bass line give the Harmony (MIDI In), a lead or a rhythm give the Motif");
 
     prevBtn.setButtonText (juce::CharPointer_UTF8 ("\xe2\x97\x80"));
     nextBtn.setButtonText (juce::CharPointer_UTF8 ("\xe2\x96\xb6"));
@@ -190,7 +202,7 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     presetBtn.onClick = [this] { showPresetMenu(); };
     presetBtn.setTooltip ("Factory and user presets");
 
-    for (auto* b : { &newBtn, &mutateBtn, &loadBtn, &captureBtn, &exportBtn, &scaleBtn, &prevBtn, &nextBtn, &seedBtn, &favBtn, &presetBtn })
+    for (auto* b : { &newBtn, &mutateBtn, &loadBtn, &captureBtn, &learnBtn, &exportBtn, &scaleBtn, &prevBtn, &nextBtn, &seedBtn, &favBtn, &presetBtn })
         content.addAndMakeVisible (*b);
     content.addAndMakeVisible (previewToggle);
     content.addChildComponent (scaleLockToggle);
@@ -221,6 +233,7 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     choice (genControls, "bars", "Bars");
     choice (genControls, "harmony", "Harmony");
     choice (genControls, "rate", "Rate");
+    choice (genControls, "motif", "Motif");
     for (auto [id, label] : { std::pair { "density", "Density" }, { "longNotes", "Long Notes" }, { "pedal", "Pedal" },
                               { "octave", "Octave" }, { "chroma", "Chroma" }, { "slide", "Slide" }, { "gate", "Gate" },
                               { "swing", "Swing" }, { "vowels", "Vowels" }, { "inflect", "Inflection" }, { "growl", "Growl" },
@@ -298,7 +311,7 @@ DarkMPEEditor::DarkMPEEditor (DarkMPEProcessor& p)
     proc.onRebuilt = [this]
     {
         roll.refresh();
-        if (proc.getMode() != DarkMPEProcessor::Mode::transform)
+        if (proc.getMode() != DarkMPEProcessor::Mode::transform && juce::Time::getMillisecondCounterHiRes() >= learnResultUntil)
             showHarmony();
         for (auto& row : layerRows)
             row->repaint();
@@ -331,6 +344,52 @@ void DarkMPEEditor::timerCallback()
     if (proc.getMode() != shownMode || proc.isVoiceEngine() != shownVoice)
         updateModeVisibility();
     updateSeedControls();
+
+    // LEARN: progress while listening, then the result once.
+    const bool listening = proc.isLearning();
+    if (listening || shownLearning)
+        setStatus (proc.getLearnStatus());
+    if (shownLearning && ! listening)
+        learnResultUntil = juce::Time::getMillisecondCounterHiRes() + 6000.0;
+    if (listening != shownLearning)
+        learnBtn.setToggleState (listening, juce::dontSendNotification);
+    shownLearning = listening;
+}
+
+void DarkMPEEditor::showLearnMenu()
+{
+    using dmpe::LearnKind;
+    juce::PopupMenu m;
+    m.addSectionHeader ("What does the clip on this track play? (4 bars)");
+    m.addItem (1, "Chords   ->  Harmony: MIDI In");
+    m.addItem (2, "Bass line   ->  Harmony: MIDI In");
+    m.addItem (3, "Lead   ->  Motif: Your Lead");
+    m.addItem (4, "Rhythm   ->  Motif: Your Rhythm");
+    m.addSeparator();
+    juce::PopupMenu forget;
+    forget.addItem (11, "Learned chords", proc.hasLearned (LearnKind::chords));
+    forget.addItem (13, "Learned lead", proc.hasLearned (LearnKind::lead));
+    forget.addItem (14, "Learned rhythm", proc.hasLearned (LearnKind::rhythm));
+    m.addSubMenu ("Forget", forget);
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&learnBtn),
+                     [safe = juce::Component::SafePointer<DarkMPEEditor> (this)] (int result)
+                     {
+                         if (safe == nullptr || result <= 0)
+                             return;
+                         auto& ed = *safe;
+                         if (result < 10)
+                         {
+                             ed.proc.startLearn ((LearnKind) (result - 1));
+                             ed.learnBtn.setToggleState (true, juce::dontSendNotification);
+                             ed.setStatus (ed.proc.getLearnStatus());
+                         }
+                         else
+                         {
+                             ed.proc.forgetLearned ((LearnKind) (result - 11));
+                             ed.setStatus ("Forgot the learned " + juce::String (result == 11 ? "chords" : (result == 13 ? "lead" : "rhythm")));
+                         }
+                     });
 }
 
 void DarkMPEEditor::updateSeedControls()
@@ -503,6 +562,7 @@ void DarkMPEEditor::updateModeVisibility()
     for (auto& c : kitControls) c->setVisible (kit);
     for (auto& r : layerRows) r->setVisible (kit);
     mutateBtn.setEnabled (gen || kit);
+    learnBtn.setEnabled (gen || kit);
     if (xform && proc.hasSource())
         setStatus ("Source: " + proc.getSourceName() + "  -  " + proc.describeSource());
     if (! xform)
@@ -557,6 +617,13 @@ void DarkMPEEditor::paintContent (juce::Graphics& g)
     g.drawText ("DARK", 14, 8, 100, 34, juce::Justification::centredLeft, false);
     g.setColour (accent());
     g.drawText ("MPE", 108, 8, 76, 34, juce::Justification::centredLeft, false);
+    // MK2: the experimental version (installs next to DarkMPE 1.x)
+    const juce::Rectangle<float> badge (140.0f, 37.0f, 30.0f, 11.0f); // under "MPE"
+    g.setColour (accent());
+    g.fillRoundedRectangle (badge, 2.5f);
+    g.setColour (bg());
+    g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
+    g.drawText ("MK2", badge, juce::Justification::centred, false);
 
     auto section = [&] (juce::Rectangle<int> r, const juce::String& title)
     {
@@ -624,8 +691,8 @@ void DarkMPEEditor::layoutContent()
 
     // ---- toolbar: actions, status, playback / export
     auto bar = r.removeFromTop (34);
-    for (auto* b : { &newBtn, &mutateBtn, &loadBtn, &captureBtn })
-        b->setBounds (bar.removeFromLeft (84).reduced (2, 3));
+    for (auto* b : { &newBtn, &mutateBtn, &loadBtn, &captureBtn, &learnBtn })
+        b->setBounds (bar.removeFromLeft (80).reduced (2, 3));
     dragOut.setBounds (bar.removeFromRight (160).reduced (2, 2));
     bar.removeFromRight (6);
     exportBtn.setBounds (bar.removeFromRight (80).reduced (2, 3));

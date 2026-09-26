@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(DarkMPE VERSION 1.0.0 LANGUAGES C CXX)
+project(DarkMPE VERSION 2.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,7 @@ set(ENGINE_SOURCES
     Source/engine/HarmonyEngine.cpp
     Source/engine/LeadHarmony.cpp
     Source/engine/VoiceGenerator.cpp
+    Source/engine/MidiLearn.cpp
     Source/engine/Humanize.cpp
     Source/engine/KitGenerator.cpp
     Source/engine/ExpressionShaper.cpp
@@ -27,13 +28,15 @@ set(ENGINE_SOURCES
     Source/engine/MidiFileIO.cpp)
 
 # ---------------------------------------------------------------- plugin
+# DarkMPE MK2 (experimental): its own plugin code, bundle id and name, so it installs next to DarkMPE 1.x
+# (the stable version on main) instead of replacing it.
 juce_add_plugin(DarkMPE
     COMPANY_NAME "Laherte"
-    BUNDLE_ID "com.laherte.darkmpe"
+    BUNDLE_ID "com.laherte.darkmpe.mk2"
     PLUGIN_MANUFACTURER_CODE Lahr
-    PLUGIN_CODE DkMP
+    PLUGIN_CODE DkM2
     FORMATS VST3 AU Standalone
-    PRODUCT_NAME "DarkMPE"
+    PRODUCT_NAME "DarkMPE MK2"
     IS_SYNTH TRUE
     NEEDS_MIDI_INPUT TRUE
     NEEDS_MIDI_OUTPUT TRUE

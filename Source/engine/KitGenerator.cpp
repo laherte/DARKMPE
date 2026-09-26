@@ -445,7 +445,9 @@ std::vector<KitPart> generateKit (const KitParams& p)
                 auto pad = p.pad;
                 pad.key = p.gen.key;
                 pad.scale = p.gen.scale;
-                pad.scaleLock = p.gen.scaleLock;
+                // Scale Lock pulls the pad's colours into the scale, unless your learned chords leave it: then
+                // the pad plays your chords as they are.
+                pad.scaleLock = p.gen.scaleLock && harmony.inKey();
                 part.phrase = cinematicRegions (harmony.chords(), length, pad, p.gen.key);
                 break;
             }

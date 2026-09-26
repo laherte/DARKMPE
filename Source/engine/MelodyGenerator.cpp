@@ -2,6 +2,7 @@
 #include "Rng.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <numeric>
 
@@ -109,6 +110,12 @@ struct MotifEvent
     bool accent;
     bool hold = false;   // a long note: holds over the steps it swallowed
     float jitter = 0.0f; // velocity variation fixed per event (forms: repeated sections stay identical)
+
+    // Learned (MIDI Learn) events keep what you played.
+    bool learned = false;       // a learned lead note: its pitch, length and velocity are yours
+    int semis = 0;              // chromatic offset above the scale note `offset`
+    double fixedLength = -1.0;  // beats, -1 = from the gate
+    float fixedVelocity = -1.0f;
 };
 
 // A section of a phrase form built from the basic idea A. Offsets are scale steps from the chord root; pedal
@@ -214,6 +221,8 @@ struct NoteInfo
     bool hold = false;
     bool tail = false;
     uint64_t place = 0; // the bar (classic) or the section label (forms): repeated sections decide alike
+    bool learned = false;      // a note of your lead: no approach notes, glides only where you played legato
+    double fixedLength = -1.0; // beats
 };
 
 } // namespace
@@ -265,8 +274,55 @@ HarmonyTrack leadHarmony (const GenParams& p, SectionMarks* marks)
     spec.progression.darkness = p.darkness;
     spec.progression.form = p.form;
     spec.progression.seed = p.seed;
+    if (p.learned != nullptr)
+        spec.learnedChords = p.learned->chords;
     spec.scaleLock = p.scaleLock;
     return buildHarmony (spec, marks);
+}
+
+std::vector<LearnedNote> learnedNotes (const GenParams& p, bool rhythm)
+{
+    std::vector<LearnedNote> out;
+    if (p.learned == nullptr)
+        return out;
+    const auto& events = rhythm ? p.learned->rhythm : p.learned->lead;
+    if (events.empty())
+        return out;
+
+    const int n = stepsPerBar (p.rate);
+    const double stepLen = 4.0 / n;
+
+    // The chords the line was played over (the learned ones, or the tonic), and a fixed reference register:
+    // Oct Base then moves your line by octaves.
+    auto refParams = p;
+    refParams.harmony = p.learned->chords.empty() ? HarmonySource::tonic : HarmonySource::learned;
+    refParams.bars = 4;
+    const auto reference = leadHarmony (refParams);
+    const int refTonic = p.key + 48;
+
+    for (const auto& e : events)
+    {
+        const int slot = scales::mod ((int) std::lround (e.start / stepLen), 4 * n); // the loop's end is its start
+        LearnedNote note;
+        note.bar = slot / n;
+        note.step = slot % n;
+        note.length = e.length;
+        note.velocity = e.velocity;
+        if (! rhythm && e.pitch >= 0)
+        {
+            const double t = note.bar * 4.0 + note.step * stepLen;
+            int d = -42;
+            while (d < 70 && reference.pitch (t, refTonic, d + 1) <= e.pitch)
+                ++d;
+            note.degree = d;
+            note.semis = e.pitch - reference.pitch (t, refTonic, d);
+        }
+        const bool taken = std::any_of (out.begin(), out.end(), [&note] (const LearnedNote& x) { return x.bar == note.bar && x.step == note.step; });
+        if (! taken)
+            out.push_back (note);
+    }
+    std::sort (out.begin(), out.end(), [] (const LearnedNote& a, const LearnedNote& b) { return a.bar != b.bar ? a.bar < b.bar : a.step < b.step; });
+    return out;
 }
 
 Phrase generateMelody (const GenParams& p)
@@ -390,6 +446,43 @@ Phrase generateMelody (const GenParams& p)
         }
     }
 
+    // ---- MIDI Learn: your lead (your notes, as degrees over the chords) or your rhythm (the line above, sounding
+    // where you played), one motif per learned bar.
+    const bool learnedLead = p.motif == MotifSource::lead && p.learned != nullptr && ! p.learned->lead.empty();
+    const bool learnedRhythm = p.motif == MotifSource::rhythm && p.learned != nullptr && ! p.learned->rhythm.empty();
+    std::array<std::vector<MotifEvent>, 4> learnedBars;
+    if (learnedLead || learnedRhythm)
+    {
+        static const int arpShape[] = { 0, 2, 4, 7, 9, 7, 4, 2 };
+        std::array<int, 4> arpIndex {};
+        for (const auto& ln : learnedNotes (p, learnedRhythm))
+        {
+            const int level = metricLevel (ln.step, n);
+            MotifEvent e;
+            if (learnedLead)
+            {
+                e = { ln.step, ln.degree, 0, false, level >= 3 || ln.velocity >= 0.8f };
+                e.learned = true;
+                e.semis = ln.semis;
+                e.fixedLength = ln.length;
+            }
+            else
+            {
+                e = line[(size_t) ln.step];
+                e.accent = level >= 3 || ln.velocity >= 0.8f;
+                if (def.arp)
+                {
+                    e.offset = arpShape[arpIndex[(size_t) ln.bar]++ % (int) std::size (arpShape)];
+                    e.pedal = false;
+                }
+            }
+            e.fixedVelocity = ln.velocity;
+            learnedBars[(size_t) ln.bar].push_back (e);
+        }
+    }
+    const bool learnedMotif = learnedLead || learnedRhythm;
+    auto motifOf = [&] (int bar) -> const std::vector<MotifEvent>& { return learnedMotif ? learnedBars[(size_t) (bar % 4)] : motif; };
+
     // ---- unfold over bars
     const int tonic = p.key + 12 * (p.baseOctave + 1);
     const int lowest = tonic - 5;
@@ -406,13 +499,30 @@ Phrase generateMelody (const GenParams& p)
         if (e.step % 2 == 1 && beat % 3 != 0 && n >= 8)
             note.start += p.swing * (stepLen / 3.0);
         int pitch = harmony.pitch (bar * 4.0 + e.step * stepLen, tonic, e.offset) + 12 * e.octave;
-        while (pitch > highest) pitch -= 12;
-        while (pitch < lowest)  pitch += 12;
-        note.pitch = pitch;
+        if (e.semis != 0)
+        {
+            // A chromatic note of your lead (with Scale Lock only if it is in the scale).
+            const int chromatic = pitch + e.semis;
+            if (! p.scaleLock || scales::inScale (chromatic, p.key, p.scale))
+            {
+                pitch = chromatic;
+                note.chromatic = ! scales::inScale (chromatic, p.key, p.scale);
+            }
+        }
+        if (! e.learned) // your lead keeps its register
+        {
+            while (pitch > highest) pitch -= 12;
+            while (pitch < lowest)  pitch += 12;
+        }
+        note.pitch = std::clamp (pitch, 0, 127);
         note.accent = e.accent;
-        note.velocity = std::clamp ((e.pedal ? 0.66f : 0.74f) + (e.accent ? 0.2f : 0.0f) + 0.08f * jitter, 0.05f, 1.0f);
+        note.velocity = e.fixedVelocity >= 0.0f ? std::clamp (e.fixedVelocity, 0.05f, 1.0f)
+                                                : std::clamp ((e.pedal ? 0.66f : 0.74f) + (e.accent ? 0.2f : 0.0f) + 0.08f * jitter, 0.05f, 1.0f);
         out.notes.push_back (note);
-        info.push_back (ni);
+        auto withSource = ni;
+        withSource.learned = e.learned;
+        withSource.fixedLength = e.fixedLength;
+        info.push_back (withSource);
     };
 
     const auto sections = formSections (p.form, bars);
@@ -420,7 +530,9 @@ Phrase generateMelody (const GenParams& p)
     {
         // Phrase form: every bar is a section built from the motif; the same label gives the same notes
         // (MUTATE re-draws the answers, never A).
-        for (auto& e : motif)
+        // With MIDI Learn the idea A is the first bar you played.
+        auto idea = motifOf (0);
+        for (auto& e : idea)
             e.jitter = keyedRng ({ seed, velSalt, (uint64_t) tickOf (e.step, n) }).uniform();
 
         for (int bar = 0; bar < bars; ++bar)
@@ -429,7 +541,7 @@ Phrase generateMelody (const GenParams& p)
             const uint64_t label = hashLabel (sec.label.c_str());
             Rng secRng = keyedRng ({ seed, varSalt, var, label });
             std::vector<bool> tail;
-            const auto events = sectionMotif (motif, sec, def, secRng, n, tail);
+            const auto events = sectionMotif (idea, sec, def, secRng, n, tail);
             for (size_t i = 0; i < events.size(); ++i)
                 place (events[i], bar, events[i].jitter,
                        { bar, events[i].step, metricLevel (events[i].step, n), events[i].pedal, events[i].hold, tail[i], label });
@@ -443,16 +555,28 @@ Phrase generateMelody (const GenParams& p)
             const bool evenVariation = bar % 2 == 1;
             const size_t first = out.notes.size();
 
-            for (auto e : motif)
+            for (auto e : motifOf (bar))
             {
                 auto r = keyedRng ({ seed, varSalt, var, (uint64_t) bar, (uint64_t) tickOf (e.step, n) });
-                if (responseBar && ! e.pedal && r.chance (0.35f))
-                    e.offset = pickWeighted (r, def.pool, def.weights, e.offset);
-                else if (evenVariation && ! e.pedal && r.chance (0.12f))
-                    e.offset = pickWeighted (r, def.pool, def.weights, e.offset);
+                if (e.learned)
+                {
+                    // Your lead comes back note for note; MUTATE varies the answering bars a step or two.
+                    if (var > 0 && (responseBar || evenVariation) && r.chance (responseBar ? 0.3f : 0.15f))
+                    {
+                        e.offset += (r.chance (0.5f) ? 1 : 2) * (r.chance (0.5f) ? 1 : -1);
+                        e.semis = 0;
+                    }
+                }
+                else
+                {
+                    if (responseBar && ! e.pedal && r.chance (0.35f))
+                        e.offset = pickWeighted (r, def.pool, def.weights, e.offset);
+                    else if (evenVariation && ! e.pedal && r.chance (0.12f))
+                        e.offset = pickWeighted (r, def.pool, def.weights, e.offset);
 
-                if (responseBar && e.step * 4 >= n * 3 && r.chance (0.3f))
-                    e.octave += 1; // lift at the end of the phrase
+                    if (responseBar && e.step * 4 >= n * 3 && r.chance (0.3f))
+                        e.octave += 1; // lift at the end of the phrase
+                }
 
                 const float jitter = keyedRng ({ seed, velSalt, (uint64_t) bar, (uint64_t) tickOf (e.step, n) }).uniform();
                 place (e, bar, jitter, { bar, e.step, metricLevel (e.step, n), e.pedal, e.hold, false, (uint64_t) bar });
@@ -461,7 +585,7 @@ Phrase generateMelody (const GenParams& p)
             // Response bar: occasionally drop a note (never the downbeat) for breathing room: the one whose
             // position draws lowest, so a denser bar drops the same note or one of the new ones.
             const size_t count = out.notes.size() - first;
-            if (responseBar && count > 2 && keyedRng ({ seed, dropSalt, var, (uint64_t) bar }).chance (0.25f))
+            if (responseBar && ! learnedMotif && count > 2 && keyedRng ({ seed, dropSalt, var, (uint64_t) bar }).chance (0.25f))
             {
                 size_t victim = first + 1;
                 float lowest = 2.0f;
@@ -489,7 +613,7 @@ Phrase generateMelody (const GenParams& p)
     for (size_t i = 0; i + 1 < count; ++i)
     {
         const auto& ni = info[i];
-        if (ni.level >= 3 || ni.pedal || ni.hold || ni.tail)
+        if (ni.level >= 3 || ni.pedal || ni.hold || ni.tail || ni.learned || info[i + 1].learned)
             continue;
         if (! sections.empty() && info[i].bar != info[i + 1].bar)
             continue;
@@ -523,9 +647,14 @@ Phrase generateMelody (const GenParams& p)
     {
         const double nextStart = (i + 1 < count) ? notes[i + 1].start : out.lengthBeats;
         const double span = std::max (0.05, nextStart - notes[i].start);
-        notes[i].length = std::max (0.05, span * (info[i].hold ? std::max (gate, 0.92f) : gate));
+        if (info[i].fixedLength > 0.0)
+            notes[i].length = std::max (0.05, std::min (info[i].fixedLength, span)); // your articulation
+        else
+            notes[i].length = std::max (0.05, span * (info[i].hold ? std::max (gate, 0.92f) : gate));
 
-        if (i > 0 && notes[i - 1].pitch != notes[i].pitch && noteRng (i, slideSalt).chance (slideProb))
+        // Your lead glides only where you played legato.
+        const bool legatoIn = i > 0 && (info[i - 1].fixedLength < 0.0 || info[i - 1].fixedLength >= notes[i].start - notes[i - 1].start - 0.02);
+        if (legatoIn && notes[i - 1].pitch != notes[i].pitch && noteRng (i, slideSalt).chance (slideProb))
         {
             notes[i - 1].length = notes[i].start - notes[i - 1].start; // tie into the slide
             notes[i].glideFrom = notes[i - 1].pitch;

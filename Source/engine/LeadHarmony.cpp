@@ -111,6 +111,12 @@ ChordSpan spanFor (const Region& chord, int key, Scale keyScale)
 
 } // namespace
 
+bool HarmonyTrack::inKey() const
+{
+    return std::all_of (spans.begin(), spans.end(), [this] (const ChordSpan& s)
+                        { return s.scale == scale && mod (s.scaleTonic, 12) == key; });
+}
+
 const ChordSpan& HarmonyTrack::at (double beat) const
 {
     for (size_t i = spans.size(); i-- > 1;)
@@ -167,6 +173,7 @@ HarmonyTrack buildHarmony (const HarmonySpec& spec, SectionMarks* marks)
 {
     HarmonyTrack track;
     track.key = mod (spec.key, 12);
+    track.scale = spec.scale;
     const int bars = std::clamp (spec.bars, 1, 16);
 
     std::vector<Region> chords;
@@ -184,6 +191,21 @@ HarmonyTrack buildHarmony (const HarmonySpec& spec, SectionMarks* marks)
                     c = lockChord (c, spec.key, spec.scale);
             break;
         }
+
+        case HarmonySource::learned:
+            // Your chords, as played, every 4 bars.
+            for (int rep = 0; rep * 16 < bars * 4 && ! spec.learnedChords.empty(); ++rep)
+                for (auto c : spec.learnedChords)
+                {
+                    c.start += rep * 16.0;
+                    if (c.start >= bars * 4.0 - 1.0e-9 || c.pitches.empty())
+                        continue;
+                    c.length = std::min (c.length, bars * 4.0 - c.start);
+                    chords.push_back (c);
+                }
+            if (! chords.empty())
+                break;
+            [[fallthrough]]; // nothing learned yet: the tonic
 
         case HarmonySource::tonic:
         {

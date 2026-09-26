@@ -38,6 +38,7 @@ constexpr const char* scaleLock = "scaleLock";
 constexpr const char* vowels = "vowels";
 constexpr const char* inflect = "inflect";
 constexpr const char* growl = "growl";
+constexpr const char* motif = "motif";
 // voicing
 constexpr const char* vMode = "vMode";
 constexpr const char* voices = "voices";
@@ -141,6 +142,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout DarkMPEProcessor::createLayo
     flt (ids::vowels, "Vowels", 0.0f, 1.0f, 0.6f);
     flt (ids::inflect, "Inflection", 0.0f, 1.0f, 0.5f);
     flt (ids::growl, "Growl", 0.0f, 1.0f, 0.2f);
+    choice (ids::motif, "Motif", names (motifSourceNames, (int) MotifSource::count), 0);
 
     choice (ids::vMode, "Voicing", names (voicingNames, (int) VoicingMode::count), 2);
     integer (ids::voices, "Voices", 1, 6, 4);
@@ -219,7 +221,7 @@ DarkMPEProcessor::DarkMPEProcessor()
 {
     const int instance = ++instanceCounter;
     instanceNumber = instance;
-    portName = instance == 1 ? juce::String ("DarkMPE Out") : "DarkMPE Out " + juce::String (instance);
+    portName = instance == 1 ? juce::String ("DarkMPE MK2 Out") : "DarkMPE MK2 Out " + juce::String (instance);
 
     apvts.state.setProperty ("seed", juce::Random::getSystemRandom().nextInt (100000), nullptr);
     apvts.state.setProperty ("variation", 0, nullptr);
@@ -229,7 +231,7 @@ DarkMPEProcessor::DarkMPEProcessor()
             if (wp->paramID != ids::preview)
                 apvts.addParameterListener (wp->paramID, this);
 
-    startTimerHz (4); // watches for the first playback (see allowPorts)
+    startTimerHz (10); // watches for the first playback (see allowPorts) and follows LEARN
 
     pbRangeParam = apvts.getRawParameterValue (ids::pbRange);
     previewParam = apvts.getRawParameterValue (ids::preview);
@@ -249,7 +251,7 @@ juce::String DarkMPEProcessor::getLayerPortName (int layer) const
 {
     if (layer <= 0)
         return portName;
-    return "DarkMPE " + juce::String (layerNames[juce::jlimit (0, numLayers - 1, layer)])
+    return "DarkMPE MK2 " + juce::String (layerNames[juce::jlimit (0, numLayers - 1, layer)])
          + (instanceNumber > 1 ? " " + juce::String (instanceNumber) : juce::String());
 }
 
@@ -258,7 +260,7 @@ void DarkMPEProcessor::updatePorts()
     const bool allowed = portAllowed.load() && pb (ids::virtualOut);
     ports.setOpen (0, portName, allowed);
 
-    // KIT layers get their own port ("DarkMPE Bass", ...) once used; they stay so Live keeps its routing.
+    // KIT layers get their own port ("DarkMPE MK2 Bass", ...) once used; they stay so Live keeps its routing.
     for (int l = 1; l < numLayers; ++l)
     {
         if (! allowed)
@@ -305,6 +307,7 @@ void DarkMPEProcessor::timerCallback()
 {
     if (playedOnce.load() && ! portAllowed.load())
         allowPorts();
+    updateLearn();
 }
 
 // ------------------------------------------------------------------ parameters
@@ -343,6 +346,8 @@ GenParams DarkMPEProcessor::readGenParams() const
     g.progression = (Progression) pi (ids::cProg);
     g.chordLength = (ChordLength) pi (ids::cChordLen);
     g.darkness = pf (ids::cDark);
+    g.motif = (MotifSource) pi (ids::motif);
+    g.learned = learned;
     return g;
 }
 
@@ -567,6 +572,25 @@ void DarkMPEProcessor::rebuild()
         describeChords (*r, leadHarmony (gen).chords());
     }
 
+    // MIDI Learn: your lead under the output, in the roll.
+    if ((getMode() == Mode::generate || getMode() == Mode::kit) && pi (ids::motif) == (int) MotifSource::lead
+        && learned != nullptr && ! learned->lead.empty())
+    {
+        const double loop = barChoices[std::clamp (pi (ids::bars), 0, 3)] * 4.0;
+        r->ghost.lengthBeats = loop;
+        for (double at = 0.0; at < loop - 1.0e-9; at += learnBeats)
+            for (const auto& e : learned->lead)
+                if (at + e.start < loop - 1.0e-9)
+                {
+                    Note n;
+                    n.start = at + e.start;
+                    n.length = std::min (e.length, loop - n.start);
+                    n.pitch = e.pitch;
+                    n.velocity = e.velocity;
+                    r->ghost.notes.push_back (n);
+                }
+    }
+
     // Melodic forms: one section per bar (the lead, and the kit layers that follow it).
     const bool melodic = getMode() == Mode::kit || getMode() == Mode::generate || (getMode() == Mode::transform && source.empty());
     if (melodic)
@@ -749,6 +773,8 @@ juce::String DarkMPEProcessor::describeSource() const
 // ------------------------------------------------------------------ capture
 void DarkMPEProcessor::setCapturing (bool shouldCapture)
 {
+    if (learning.load())
+        cancelLearn(); // CAPTURE takes the input over from LEARN
     if (shouldCapture == capturing.load())
         return;
 
@@ -764,31 +790,90 @@ void DarkMPEProcessor::setCapturing (bool shouldCapture)
     }
 }
 
-void DarkMPEProcessor::finishCapture()
+DarkMPEProcessor::CaptureWindow DarkMPEProcessor::captureWindow() const
 {
-    const int count = std::min (captureCount.load (std::memory_order_acquire), (int) captureBuffer.size());
-
-    double firstOn = -1.0;
-    for (int i = 0; i < count && firstOn < 0.0; ++i)
+    CaptureWindow w;
+    w.count = std::min (captureCount.load (std::memory_order_acquire), (int) captureBuffer.size());
+    for (int i = 0; i < w.count; ++i)
     {
         const auto& e = captureBuffer[(size_t) i];
-        if ((e.bytes[0] & 0xf0) == 0x90 && e.bytes[2] > 0)
-            firstOn = e.beat;
+        if ((e.bytes[0] & 0xf0) != 0x90 || e.bytes[2] == 0)
+            continue;
+        w.found = true;
+        if (e.host >= 0.0)
+        {
+            // The host's bar of the first note, and where that bar sits in a 4-bar loop.
+            const double bar = std::floor ((e.host + 1.0e-6) / 4.0) * 4.0;
+            w.origin = e.beat - (e.host - bar);
+            w.phase = std::fmod (bar, dmpe::learnBeats);
+            if (w.phase < 0.0)
+                w.phase += dmpe::learnBeats;
+        }
+        else
+            w.origin = e.beat; // transport stopped: the first note is the downbeat
+        break;
     }
-    if (firstOn < 0.0)
-        return;
+    return w;
+}
+
+// `loop`: the notes of the window's `length` beats, turned round onto the host's 4-bar loop (a note held over the
+// loop's end goes on at its start); otherwise the whole take from the origin (CAPTURE).
+Phrase DarkMPEProcessor::capturedPhrase (const CaptureWindow& w, double length, bool loop, LoadInfo* info) const
+{
+    juce::MidiMessageSequence seq;
+    for (int i = 0; i < w.count; ++i)
+    {
+        const auto& e = captureBuffer[(size_t) i];
+        const double t = e.beat - w.origin;
+        if (loop && (t < -1.0e-9 || (t >= length - 1.0e-9 && (e.bytes[0] & 0xf0) == 0x90 && e.bytes[2] > 0)))
+            continue;
+        seq.addEvent (juce::MidiMessage (e.bytes, e.size, 0.0), std::max (0.0, t));
+    }
+    // Notes still held when listening stopped end there.
+    const double end = std::max (0.0, captureClockNow.load (std::memory_order_acquire) - w.origin);
+    for (int ch = 1; ch <= 16; ++ch)
+        seq.addEvent (juce::MidiMessage::allNotesOff (ch), loop ? std::min (end, length) : end);
+    seq.sort();
 
     // Everything (including MPE expression) is decoded by the same code as file import.
-    const double origin = std::floor (firstOn / 4.0) * 4.0;
-    juce::MidiMessageSequence seq;
-    for (int i = 0; i < count; ++i)
-    {
-        const auto& e = captureBuffer[(size_t) i];
-        seq.addEvent (juce::MidiMessage (e.bytes, e.size, 0.0), std::max (0.0, e.beat - origin));
-    }
+    auto p = phraseFromBeatSequence (seq, info);
+    if (! loop)
+        return p;
 
+    Phrase out;
+    out.lengthBeats = length;
+    for (auto n : p.notes)
+    {
+        if (n.start < 0.0 || n.start >= length - 1.0e-9)
+            continue;
+        n.length = std::min (n.length, length - n.start);
+        n.start += w.phase;
+        if (n.start >= length - 1.0e-6)
+            n.start = std::max (0.0, n.start - length);
+        if (n.end() > length + 1.0e-9)
+        {
+            auto rest = n; // held over the loop's end: it sounds on at the start (no new attack for a line)
+            rest.start = 0.0;
+            rest.length = n.end() - length;
+            n.length = length - n.start;
+            if (learnKind == dmpe::LearnKind::chords || learnKind == dmpe::LearnKind::bass)
+                out.notes.push_back (rest);
+        }
+        out.notes.push_back (n);
+    }
+    out.sortByStart();
+    return out;
+}
+
+void DarkMPEProcessor::finishCapture()
+{
+    const auto w = captureWindow();
+    if (! w.found)
+        return;
+
+    // The take starts on the bar of its first note (on the host's bars when it played).
     LoadInfo info;
-    auto p = phraseFromBeatSequence (seq, &info);
+    auto p = capturedPhrase (w, 0.0, false, &info);
     if (p.empty())
         return;
 
@@ -801,6 +886,238 @@ void DarkMPEProcessor::finishCapture()
     if (getMode() == Mode::generate)
         setMode (Mode::transform);
     rebuild();
+}
+
+// ------------------------------------------------------------------ MIDI Learn
+void DarkMPEProcessor::startLearn (LearnKind kind)
+{
+    capturing.store (false); // a CAPTURE (or an earlier LEARN) in progress is dropped
+    learnKind = kind;
+    captureCount.store (0);
+    learning.store (true);
+    capturing.store (true);
+    learnStatus = "LEARN " + juce::String (learnKindNames[(int) kind]) + ": waiting for the first note - press Play (the clip on this track)";
+}
+
+void DarkMPEProcessor::cancelLearn()
+{
+    if (! learning.exchange (false))
+        return;
+    capturing.store (false);
+    learnStatus = "LEARN cancelled";
+}
+
+void DarkMPEProcessor::updateLearn()
+{
+    if (! learning.load())
+        return;
+    const auto w = captureWindow();
+    const juce::String what = learnKindNames[(int) learnKind];
+    const bool full = w.count >= (int) captureBuffer.size();
+    if (! w.found)
+    {
+        if (full)
+            cancelLearn();
+        else
+            learnStatus = "LEARN " + what + ": waiting for the first note - press Play (the clip on this track)";
+        return;
+    }
+    const double heard = captureClockNow.load (std::memory_order_acquire) - w.origin;
+    if (heard >= learnBeats || full)
+    {
+        finishLearn();
+        return;
+    }
+    learnStatus = "LEARN " + what + ": listening, bar " + juce::String (juce::jlimit (1, 4, (int) (heard / 4.0) + 1)) + " of 4";
+}
+
+void DarkMPEProcessor::finishLearn()
+{
+    const auto w = captureWindow();
+    const auto clip = capturedPhrase (w, learnBeats, true);
+    learning.store (false);
+    capturing.store (false);
+
+    const auto result = analyseClip (learnKind, clip, pi (ids::key), (scales::Scale) pi (ids::scale));
+
+    if (! result.ok)
+    {
+        learnStatus = "LEARN: " + juce::String (result.message);
+        return;
+    }
+
+    auto next = std::make_shared<Learned> (currentLearned());
+    auto set = [this] (const char* id, float plain)
+    {
+        if (auto* param = apvts.getParameter (id))
+            param->setValueNotifyingHost (param->convertTo0to1 (plain));
+    };
+    juce::String applied;
+    switch (learnKind)
+    {
+        case LearnKind::chords:
+        case LearnKind::bass:
+        case LearnKind::count:
+            next->chords = result.chords;
+            set (ids::harmony, (float) HarmonySource::learned);
+            applied = "Harmony: MIDI In";
+            break;
+        case LearnKind::lead:
+            next->lead = result.events;
+            set (ids::motif, (float) MotifSource::lead);
+            set (ids::rate, (float) result.rate);
+            applied = "Motif: Your Lead";
+            // Your notes as you played them: over your learned chords (or the tonic), not over the style's
+            // progression (a Progression or Tonic chosen on purpose stays: your lead then follows it).
+            if (pi (ids::harmony) == (int) HarmonySource::style)
+            {
+                set (ids::harmony, (float) HarmonySource::learned);
+                applied << ", Harmony: MIDI In";
+            }
+            break;
+        case LearnKind::rhythm:
+            next->rhythm = result.events;
+            set (ids::motif, (float) MotifSource::rhythm);
+            set (ids::rate, (float) result.rate);
+            applied = "Motif: Your Rhythm";
+            break;
+    }
+    if (result.key.found && learnKind != LearnKind::rhythm)
+    {
+        set (ids::key, (float) result.key.key);
+        set (ids::scale, (float) result.key.scale);
+    }
+    set (ids::bars, 2.0f); // 4 bars: what was learned
+    setLearned (next, true);
+    learnStatus = juce::String (result.message) + "   ->   " + applied;
+    rebuild();
+}
+
+bool DarkMPEProcessor::hasLearned (LearnKind kind) const
+{
+    const juce::ScopedLock sl (rebuildLock);
+    if (learned == nullptr)
+        return false;
+    switch (kind)
+    {
+        case LearnKind::lead:   return ! learned->lead.empty();
+        case LearnKind::rhythm: return ! learned->rhythm.empty();
+        case LearnKind::chords:
+        case LearnKind::bass:
+        case LearnKind::count:  return ! learned->chords.empty();
+    }
+    return false;
+}
+
+dmpe::Learned DarkMPEProcessor::currentLearned() const
+{
+    const juce::ScopedLock sl (rebuildLock); // a project may be restored from another thread
+    return learned != nullptr ? *learned : Learned {};
+}
+
+void DarkMPEProcessor::forgetLearned (LearnKind kind)
+{
+    auto next = std::make_shared<Learned> (currentLearned());
+    auto set = [this] (const char* id, float plain)
+    {
+        if (auto* param = apvts.getParameter (id))
+            param->setValueNotifyingHost (param->convertTo0to1 (plain));
+    };
+    switch (kind)
+    {
+        case LearnKind::lead:
+            next->lead.clear();
+            if (pi (ids::motif) == (int) MotifSource::lead)
+                set (ids::motif, (float) MotifSource::generated);
+            break;
+        case LearnKind::rhythm:
+            next->rhythm.clear();
+            if (pi (ids::motif) == (int) MotifSource::rhythm)
+                set (ids::motif, (float) MotifSource::generated);
+            break;
+        case LearnKind::chords:
+        case LearnKind::bass:
+        case LearnKind::count:
+            next->chords.clear();
+            if (pi (ids::harmony) == (int) HarmonySource::learned)
+                set (ids::harmony, (float) HarmonySource::style);
+            break;
+    }
+    setLearned (next, true);
+    rebuild();
+}
+
+void DarkMPEProcessor::setLearned (std::shared_ptr<const Learned> l, bool toState)
+{
+    {
+        const juce::ScopedLock sl (rebuildLock);
+        learned = l;
+    }
+    if (! toState)
+        return;
+
+    auto tree = apvts.state.getOrCreateChildWithName ("Learned", nullptr);
+    tree.removeAllChildren (nullptr);
+    if (l == nullptr)
+        return;
+    for (const auto& r : l->chords)
+    {
+        juce::ValueTree c ("Chord");
+        juce::StringArray pitches;
+        for (int x : r.pitches)
+            pitches.add (juce::String (x));
+        c.setProperty ("start", r.start, nullptr);
+        c.setProperty ("length", r.length, nullptr);
+        c.setProperty ("pitches", pitches.joinIntoString (" "), nullptr);
+        c.setProperty ("bass", r.bassPc, nullptr);
+        tree.appendChild (c, nullptr);
+    }
+    for (auto [type, events] : { std::pair { "LeadNote", &l->lead }, { "Hit", &l->rhythm } })
+        for (const auto& e : *events)
+        {
+            juce::ValueTree n (type);
+            n.setProperty ("start", e.start, nullptr);
+            n.setProperty ("length", e.length, nullptr);
+            n.setProperty ("pitch", e.pitch, nullptr);
+            n.setProperty ("velocity", e.velocity, nullptr);
+            tree.appendChild (n, nullptr);
+        }
+}
+
+void DarkMPEProcessor::loadLearnedFromState()
+{
+    const auto tree = apvts.state.getChildWithName ("Learned");
+    if (! tree.isValid() || tree.getNumChildren() == 0)
+    {
+        setLearned (nullptr, false);
+        return;
+    }
+    auto l = std::make_shared<Learned>();
+    for (const auto& child : tree)
+    {
+        if (child.hasType ("Chord"))
+        {
+            Region r;
+            r.start = (double) child.getProperty ("start", 0.0);
+            r.length = (double) child.getProperty ("length", 4.0);
+            for (const auto& x : juce::StringArray::fromTokens (child.getProperty ("pitches").toString(), " ", ""))
+                if (x.isNotEmpty())
+                    r.pitches.push_back (juce::jlimit (0, 127, x.getIntValue()));
+            r.bassPc = (int) child.getProperty ("bass", -1);
+            if (! r.pitches.empty())
+                l->chords.push_back (r);
+        }
+        else if (child.hasType ("LeadNote") || child.hasType ("Hit"))
+        {
+            LearnedEvent e;
+            e.start = (double) child.getProperty ("start", 0.0);
+            e.length = (double) child.getProperty ("length", 0.25);
+            e.pitch = (int) child.getProperty ("pitch", -1);
+            e.velocity = (float) child.getProperty ("velocity", 0.8f);
+            (child.hasType ("Hit") ? l->rhythm : l->lead).push_back (e);
+        }
+    }
+    setLearned (l, false);
 }
 
 // ------------------------------------------------------------------ export
@@ -865,7 +1182,7 @@ juce::Array<juce::File> DarkMPEProcessor::writeAllStreams (const juce::File& tar
 
 juce::StringArray DarkMPEProcessor::writeTempMidiForDrag() const
 {
-    auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("DarkMPE");
+    auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("DarkMPE MK2");
     dir.createDirectory();
     juce::StringArray paths;
     for (const auto& f : writeAllStreams (dir.getChildFile (juce::File::createLegalFileName (suggestedFileName()) + ".mid")))
@@ -1130,7 +1447,8 @@ void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::Midi
     // ---- incoming MIDI is only used for capture; it is not passed through
     if (capturing.load())
     {
-        const double inputClock = (hostPlaying && hostPpq) ? *hostPpq : captureClock;
+        // The clock runs on through the host's loop jumps; the host position places the notes on its bars.
+        const bool hostTime = hostPlaying && hostPpq;
         for (const auto meta : midi)
         {
             if (meta.numBytes < 1 || meta.numBytes > 3 || meta.data[0] < 0x80 || meta.data[0] >= 0xf0)
@@ -1140,7 +1458,8 @@ void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::Midi
             if (idx < (int) captureBuffer.size())
             {
                 auto& e = captureBuffer[(size_t) idx];
-                e.beat = inputClock + meta.samplePosition * ppqPerSample;
+                e.beat = captureClock + meta.samplePosition * ppqPerSample;
+                e.host = hostTime ? *hostPpq + meta.samplePosition * ppqPerSample : -1.0;
                 e.size = meta.numBytes;
                 for (int b = 0; b < 3; ++b)
                     e.bytes[b] = b < meta.numBytes ? meta.data[b] : 0;
@@ -1149,6 +1468,7 @@ void DarkMPEProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::Midi
         }
     }
     captureClock += blockBeats;
+    captureClockNow.store (captureClock, std::memory_order_release);
 
     // ---- key trigger (not while capturing: then the input is being recorded)
     const int trigger = capturing.load() ? 0 : (int) std::lround (trigModeParam->load (std::memory_order_relaxed));
@@ -1264,6 +1584,7 @@ void DarkMPEProcessor::setStateInformation (const void* data, int sizeInBytes)
     }
 
     apvts.replaceState (state);
+    loadLearnedFromState();
 
     // replaceState skips parameters whose value "looks" unchanged (a bool at 0.87 is already "on"): set each one
     // exactly to the saved value.

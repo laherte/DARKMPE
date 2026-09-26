@@ -24,7 +24,7 @@ bool isOutputSetting (const juce::String& paramId);
 void apply (juce::AudioProcessorValueTreeState& state, const Preset& preset);
 
 // User presets: parameters (plain values) + seed, as XML.
-juce::File userFolder(); // ~/Music/DarkMPE/Presets
+juce::File userFolder(); // ~/Music/DarkMPE MK2/Presets
 bool save (juce::AudioProcessorValueTreeState& state, int seed, int variation, const juce::File& file);
 bool load (juce::AudioProcessorValueTreeState& state, const juce::File& file, int& seed, int& variation);
 
